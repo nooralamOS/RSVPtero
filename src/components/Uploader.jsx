@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback } from 'react';
-import { extractTextFromPDF } from '../utils/pdfParser';
+import { extractPDFData } from '../utils/pdfParser';
 import { SAMPLE_TEXT } from '../utils/wordUtils';
 
 export default function Uploader({ onLoad }) {
@@ -16,8 +16,8 @@ export default function Uploader({ onLoad }) {
     setError('');
     setLoading(true);
     try {
-      const text = await extractTextFromPDF(file);
-      onLoad(text, file.name);
+      const { text, pageWordCounts, pdfData } = await extractPDFData(file);
+      onLoad({ text, name: file.name, pageWordCounts, pdfData });
     } catch (e) {
       console.error(e);
       setError('Failed to parse PDF. Try another file.');
@@ -75,7 +75,7 @@ export default function Uploader({ onLoad }) {
 
       <button
         className="uploader__sample-btn"
-        onClick={() => onLoad(SAMPLE_TEXT, 'Sample Text')}
+        onClick={() => onLoad({ text: SAMPLE_TEXT, name: 'Sample Text', pageWordCounts: null, pdfData: null })}
       >
         Try with sample text
       </button>

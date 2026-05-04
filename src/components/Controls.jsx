@@ -6,24 +6,43 @@ export default function Controls({
   onPause,
   onRestart,
   onSkip,
+  onSeek,
   wpm,
   onWpmChange,
   currentIndex,
   totalWords,
   timeRemaining,
+  chapters = [],
 }) {
   const progress = totalWords > 0 ? (currentIndex / totalWords) * 100 : 0;
+
+  const handleBarClick = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    onSeek(Math.floor(fraction * totalWords));
+  };
 
   return (
     <div className="controls">
       {/* Progress */}
       <div className="controls__progress-wrap">
         <span>{currentIndex.toLocaleString()}</span>
-        <div className="controls__progress-bar">
-          <div
-            className="controls__progress-fill"
-            style={{ width: `${progress}%` }}
-          />
+        <div className="controls__progress-track" onClick={handleBarClick}>
+          <div className="controls__progress-bar">
+            <div
+              className="controls__progress-fill"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          {chapters.map((ch) => (
+            <div
+              key={ch.wordIndex}
+              className="controls__chapter-marker"
+              style={{ left: `${(ch.wordIndex / totalWords) * 100}%` }}
+              title={ch.label}
+              onClick={(e) => { e.stopPropagation(); onSeek(ch.wordIndex); }}
+            />
+          ))}
         </div>
         <span>{totalWords.toLocaleString()}</span>
       </div>

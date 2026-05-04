@@ -9,7 +9,7 @@ export default function App() {
   if (!session) {
     return (
       <Uploader
-        onLoad={(text, name) => setSession({ text, name })}
+        onLoad={(data) => setSession(data)}
       />
     );
   }
@@ -18,6 +18,8 @@ export default function App() {
     <Reader
       rawText={session.text}
       fileName={session.name}
+      pdfData={session.pdfData}
+      pageWordCounts={session.pageWordCounts}
       onBack={() => setSession(null)}
     />
   );

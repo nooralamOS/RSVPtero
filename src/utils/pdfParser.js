@@ -5,12 +5,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).href;
 
-export async function extractTextFromPDF(file) {
+export { pdfjsLib };
+
+export async function extractPDFData(file) {
   const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
-  const pdf = await loadingTask.promise;
+  // pdfjs transfers the ArrayBuffer to its worker, so pass a disposable copy
+  // for text extraction and keep the original for thumbnail rendering.
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer.slice(0)) }).promise;
 
   const pageTexts = [];
+  const pageWordCounts = [];
+
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -18,7 +23,13 @@ export async function extractTextFromPDF(file) {
       .map((item) => ('str' in item ? item.str : ''))
       .join(' ');
     pageTexts.push(pageText);
+    const words = pageText.replace(/\s+/g, ' ').trim().split(' ').filter((w) => w.length > 0);
+    pageWordCounts.push(words.length);
   }
 
-  return pageTexts.join(' ');
+  return {
+    text: pageTexts.join(' '),
+    pageWordCounts,
+    pdfData: arrayBuffer,  // original ArrayBuffer, never transferred
+  };
 }
