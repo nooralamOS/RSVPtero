@@ -19,139 +19,192 @@ function WordInner({ word, orpRef }) {
   );
 }
 
-// Animated word stage: smooth enter/exit transitions + scroll scrubbing when paused
+// Drum roller: all positions driven by a single dragOffsetPx value (-FULL to +FULL).
+// t = dragOffsetPx / FULL_DRAG_PX  (−1 … +1)
+// Each slot's effective position p = naturalPos − t
+// translateY = SLOT_GAP * p,  scale/opacity interpolated from |p|
 function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRestart, onWordRect, onWordDoubleClick }) {
-  const animDuration = wpm >= 200 ? 150 : 250;
-  const [animKey, setAnimKey] = useState(0);
-  const [exitWord, setExitWord] = useState(null);
-  const [direction, setDirection] = useState(1);
-  const prevIndexRef = useRef(index);
-  const exitTimerRef = useRef(null);
-  const stageRef = useRef(null);
-  const orpAlignRef = useRef(null);
-  const orpRef = useRef(null);
-  const scrollCooldownRef = useRef(false);
-  const touchStartYRef = useRef(null);
-  const dragRef = useRef({ active: false, lastY: 0, accum: 0 });
-  const DRAG_PX = 32;
+  const FULL_DRAG_PX = 70;   // pixels of drag = one full word transition
+  const SLOT_GAP     = 82;   // px between slot centres at rest
+  const animDuration = wpm >= 300 ? 180 : wpm >= 200 ? 220 : 260;
 
-  // Refs so scroll handler is stable and never goes stale
-  const indexRef = useRef(index);
-  const onSeekRef = useRef(onSeek);
+  const stageRef        = useRef(null);
+  const orpAlignRef     = useRef(null);
+  const orpRef          = useRef(null);
+  const isDraggingRef   = useRef(false);
+  const dragStartYRef   = useRef(0);
+  const dragStartOffRef = useRef(0);
+  const snapRafRef      = useRef(null);
+  const scrollCoolRef   = useRef(false);
+
+  const [dragOffsetPx, setDragOffsetPx] = useState(0);
+  const dragOffRef = useRef(0);
+
+  const indexRef    = useRef(index);
+  const onSeekRef   = useRef(onSeek);
   const wordsLenRef = useRef(words.length);
-  useEffect(() => { indexRef.current = index; }, [index]);
-  useEffect(() => { onSeekRef.current = onSeek; }, [onSeek]);
-  useEffect(() => { wordsLenRef.current = words.length; }, [words.length]);
+  const durRef      = useRef(animDuration);
+  useEffect(() => { indexRef.current    = index;         }, [index]);
+  useEffect(() => { onSeekRef.current   = onSeek;        }, [onSeek]);
+  useEffect(() => { wordsLenRef.current = words.length;  }, [words.length]);
+  useEffect(() => { durRef.current      = animDuration;  }, [animDuration]);
 
-  // Trigger enter/exit animation whenever the displayed word changes
+  // Reset offset when playback starts
   useEffect(() => {
-    if (index === prevIndexRef.current) return;
-    const newDir = index > prevIndexRef.current ? 1 : -1;
-    const prevIdx = prevIndexRef.current;
-    prevIndexRef.current = index;
+    if (!playing) return;
+    cancelAnimationFrame(snapRafRef.current);
+    dragOffRef.current = 0;
+    setDragOffsetPx(0);
+  }, [playing]);
 
-    setExitWord(words[prevIdx] ?? '');
-    setDirection(newDir);
-    setAnimKey((k) => k + 1);
+  useEffect(() => () => cancelAnimationFrame(snapRafRef.current), []);
 
-    clearTimeout(exitTimerRef.current);
-    exitTimerRef.current = setTimeout(() => setExitWord(null), animDuration);
-    return () => clearTimeout(exitTimerRef.current);
-  }, [index, words, animDuration]);
-
-  // Debounced single-word advance for scroll scrubbing
-  const advanceOne = useCallback((dir) => {
-    if (scrollCooldownRef.current) return;
-    scrollCooldownRef.current = true;
-    const next = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + dir));
-    onSeekRef.current(next);
-    setTimeout(() => { scrollCooldownRef.current = false; }, 150);
+  // Animate dragOffsetPx → target with ease-out-cubic
+  const snapTo = useCallback((target, dur) => {
+    cancelAnimationFrame(snapRafRef.current);
+    const duration   = dur ?? durRef.current;
+    const startVal   = dragOffRef.current;
+    if (Math.abs(startVal - target) < 0.5) {
+      dragOffRef.current = target;
+      setDragOffsetPx(target);
+      return;
+    }
+    const t0 = performance.now();
+    function tick(now) {
+      const p = Math.min((now - t0) / duration, 1);
+      const e = 1 - Math.pow(1 - p, 3);
+      const v = startVal + (target - startVal) * e;
+      dragOffRef.current = v;
+      setDragOffsetPx(v);
+      if (p < 1) snapRafRef.current = requestAnimationFrame(tick);
+    }
+    snapRafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  // No-cooldown seek for drag (threshold is the rate limiter)
-  const seekDirect = useCallback((dir) => {
-    const next = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + dir));
-    onSeekRef.current(next);
-  }, []);
+  // Advance index and start animation from the natural "from" position
+  const commitAndAnimate = useCallback((dir) => {
+    const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + dir));
+    if (target === indexRef.current) return;
+    // After index updates, the new current slot (naturalPos 0) should start
+    // where it visually was as a neighbour, then snap to centre.
+    // That starting offset = −dir * FULL_DRAG_PX.
+    dragOffRef.current = -dir * FULL_DRAG_PX;
+    setDragOffsetPx(-dir * FULL_DRAG_PX);
+    onSeekRef.current(target);
+    snapTo(0, durRef.current);
+  }, [snapTo]);
 
-  // Attach scroll + touch + mouse-drag listeners while paused
+  // Finish a drag gesture: commit or snap back
+  const handleRelease = useCallback(() => {
+    isDraggingRef.current = false;
+    stageRef.current?.classList.remove('reader__stage--dragging');
+    const d = dragOffRef.current;
+    const t = d / FULL_DRAG_PX;
+
+    if (t > 0.35) {
+      // Commit forward — continue smoothly from current visual position
+      const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + 1));
+      if (target !== indexRef.current) {
+        const after = d - FULL_DRAG_PX; // negative — new current starts slightly below centre
+        dragOffRef.current = after;
+        setDragOffsetPx(after);
+        onSeekRef.current(target);
+        snapTo(0, durRef.current * (FULL_DRAG_PX - d) / FULL_DRAG_PX);
+      } else {
+        snapTo(0);
+      }
+    } else if (t < -0.35) {
+      // Commit backward
+      const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current - 1));
+      if (target !== indexRef.current) {
+        const after = FULL_DRAG_PX + d; // positive — new current starts slightly above centre
+        dragOffRef.current = after;
+        setDragOffsetPx(after);
+        onSeekRef.current(target);
+        snapTo(0, durRef.current * (FULL_DRAG_PX + d) / FULL_DRAG_PX);
+      } else {
+        snapTo(0);
+      }
+    } else {
+      snapTo(0);
+    }
+  }, [snapTo]);
+
+  // Attach wheel + touch + mouse listeners (paused only)
   useEffect(() => {
     if (playing || finished) return;
 
     const onWheel = (e) => {
       e.preventDefault();
-      advanceOne(e.deltaY > 0 ? 1 : -1);
+      if (scrollCoolRef.current) return;
+      scrollCoolRef.current = true;
+      cancelAnimationFrame(snapRafRef.current);
+      commitAndAnimate(e.deltaY > 0 ? 1 : -1);
+      setTimeout(() => { scrollCoolRef.current = false; }, durRef.current + 30);
     };
     const onTouchStart = (e) => {
-      touchStartYRef.current = e.touches[0].clientY;
+      cancelAnimationFrame(snapRafRef.current);
+      isDraggingRef.current  = true;
+      dragStartYRef.current  = e.touches[0].clientY;
+      dragStartOffRef.current = dragOffRef.current;
     };
     const onTouchMove = (e) => {
       e.preventDefault();
-      if (touchStartYRef.current === null) return;
-      const delta = touchStartYRef.current - e.touches[0].clientY;
-      if (Math.abs(delta) > 25) {
-        advanceOne(delta > 0 ? 1 : -1);
-        touchStartYRef.current = e.touches[0].clientY;
-      }
+      if (!isDraggingRef.current) return;
+      const dy  = dragStartYRef.current - e.touches[0].clientY;
+      const val = Math.max(-FULL_DRAG_PX, Math.min(FULL_DRAG_PX, dragStartOffRef.current + dy));
+      dragOffRef.current = val;
+      setDragOffsetPx(val);
     };
+    const onTouchEnd = () => { if (isDraggingRef.current) handleRelease(); };
     const onMouseDown = (e) => {
-      dragRef.current = { active: true, lastY: e.clientY, accum: 0 };
+      cancelAnimationFrame(snapRafRef.current);
+      isDraggingRef.current  = true;
+      dragStartYRef.current  = e.clientY;
+      dragStartOffRef.current = dragOffRef.current;
       stageRef.current?.classList.add('reader__stage--dragging');
       e.preventDefault();
     };
     const onMouseMove = (e) => {
-      if (!dragRef.current.active) return;
-      const dy = e.clientY - dragRef.current.lastY;
-      dragRef.current.lastY = e.clientY;
-      dragRef.current.accum += dy;
-      while (dragRef.current.accum <= -DRAG_PX) {
-        seekDirect(1);
-        dragRef.current.accum += DRAG_PX;
-      }
-      while (dragRef.current.accum >= DRAG_PX) {
-        seekDirect(-1);
-        dragRef.current.accum -= DRAG_PX;
-      }
+      if (!isDraggingRef.current) return;
+      const dy  = dragStartYRef.current - e.clientY;
+      const val = Math.max(-FULL_DRAG_PX, Math.min(FULL_DRAG_PX, dragStartOffRef.current + dy));
+      dragOffRef.current = val;
+      setDragOffsetPx(val);
     };
-    const onMouseUp = () => {
-      if (!dragRef.current.active) return;
-      dragRef.current.active = false;
-      stageRef.current?.classList.remove('reader__stage--dragging');
-    };
+    const onMouseUp = () => { if (isDraggingRef.current) handleRelease(); };
 
     const stage = stageRef.current;
     if (!stage) return;
-
-    // Bind wheel/touch to the stage only so scrolling the thumbnail sidebar (or
-    // controls/topbar) does not scrub words.
-    stage.addEventListener('wheel', onWheel, { passive: false });
-    stage.addEventListener('touchstart', onTouchStart, { passive: true });
-    stage.addEventListener('touchmove', onTouchMove, { passive: false });
-    stage.addEventListener('mousedown', onMouseDown);
+    stage.addEventListener('wheel',      onWheel,      { passive: false });
+    stage.addEventListener('touchstart', onTouchStart, { passive: true  });
+    stage.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    stage.addEventListener('touchend',   onTouchEnd);
+    stage.addEventListener('mousedown',  onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mouseup',   onMouseUp);
     return () => {
-      stage.removeEventListener('wheel', onWheel);
+      stage.removeEventListener('wheel',      onWheel);
       stage.removeEventListener('touchstart', onTouchStart);
-      stage.removeEventListener('touchmove', onTouchMove);
-      stage.removeEventListener('mousedown', onMouseDown);
+      stage.removeEventListener('touchmove',  onTouchMove);
+      stage.removeEventListener('touchend',   onTouchEnd);
+      stage.removeEventListener('mousedown',  onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('mouseup',   onMouseUp);
     };
-  }, [playing, finished, advanceOne, seekDirect]);
+  }, [playing, finished, commitAndAnimate, handleRelease]);
 
   const alignOrpToStage = useCallback(() => {
-    const stage = stageRef.current;
+    const stage   = stageRef.current;
     const alignEl = orpAlignRef.current;
-    const orp = orpRef.current;
+    const orp     = orpRef.current;
     if (!stage || !alignEl || !orp || finished) return;
     alignEl.style.transform = 'translateX(0px)';
-    const stageRect = stage.getBoundingClientRect();
-    const orpRect = orp.getBoundingClientRect();
-    const targetX = stageRect.left + stageRect.width / 2;
+    const stageRect  = stage.getBoundingClientRect();
+    const orpRect    = orp.getBoundingClientRect();
+    const targetX    = stageRect.left + stageRect.width / 2;
     const orpCenterX = orpRect.left + orpRect.width / 2;
-    const dx = targetX - orpCenterX;
-    alignEl.style.transform = `translateX(${dx}px)`;
+    alignEl.style.transform = `translateX(${targetX - orpCenterX}px)`;
   }, [finished]);
 
   const currentWord = words[index] ?? '';
@@ -167,28 +220,29 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
       }
     };
     run();
-    const ro = typeof ResizeObserver !== 'undefined'
-      ? new ResizeObserver(run)
-      : null;
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(run) : null;
     if (ro && stageRef.current) ro.observe(stageRef.current);
     let fontsDone = Promise.resolve();
-    if (typeof document !== 'undefined' && document.fonts?.ready) {
-      fontsDone = document.fonts.ready;
-    }
-    fontsDone.then(() => {
-      if (!cancelled) requestAnimationFrame(run);
-    });
-    return () => {
-      cancelled = true;
-      ro?.disconnect();
-    };
-  }, [currentWord, index, animKey, finished, alignOrpToStage, onWordRect]);
-  const prevWord = index > 0 ? words[index - 1] : '';
-  const nextWord = index < words.length - 1 ? words[index + 1] : '';
-  const dirSuffix = direction > 0 ? 'fwd' : 'bwd';
-  // Stable keys during playback so context words never remount while playing
-  const prevKey = playing ? 'prev' : `prev-${animKey}`;
-  const nextKey = playing ? 'next' : `next-${animKey}`;
+    if (typeof document !== 'undefined' && document.fonts?.ready) fontsDone = document.fonts.ready;
+    fontsDone.then(() => { if (!cancelled) requestAnimationFrame(run); });
+    return () => { cancelled = true; ro?.disconnect(); };
+  }, [currentWord, index, finished, alignOrpToStage, onWordRect]);
+
+  // Slot transform: naturalPos ∈ {−2,−1,0,1,2}, t drives animation
+  const t = dragOffsetPx / FULL_DRAG_PX;
+  function slotStyle(naturalPos) {
+    const p    = naturalPos - t;
+    const absP = Math.abs(p);
+    const translateY = SLOT_GAP * p;
+    const scale   = absP <= 1 ? 1 - 0.45 * absP : Math.max(0.05, 0.55 - 0.375 * (absP - 1));
+    const opacity = absP <= 1 ? Math.max(0, 1 - 0.72 * absP) : Math.max(0, 0.28 * (2 - absP));
+    return { transform: `translateY(${translateY}px) scale(${scale})`, opacity };
+  }
+
+  const prevPrevWord = index > 1              ? words[index - 2] : '';
+  const prevWord     = index > 0              ? words[index - 1] : '';
+  const nextWord     = index < words.length-1 ? words[index + 1] : '';
+  const nextNextWord = index < words.length-2 ? words[index + 2] : '';
 
   return (
     <div
@@ -204,32 +258,20 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
           <button className="reader__restart-btn" onClick={onRestart}>Read again</button>
         </div>
       ) : (
-        <>
-          <div key={prevKey} className="word-context word-context--prev">{prevWord}</div>
-
-          <div className="word-center" onDoubleClick={() => !finished && onWordDoubleClick?.()}>
-            {exitWord && !playing && (
-              <div
-                key={`exit-${animKey}`}
-                className={`word-display word-display--exit word-display--exit-${dirSuffix}`}
-                style={{ '--word-dur': `${animDuration}ms` }}
-              >
-                <WordInner word={exitWord} />
-              </div>
-            )}
-            <div
-              key={`enter-${animKey}`}
-              className={`word-display${!playing && animKey > 0 ? ` word-display--enter-${dirSuffix}` : ''}`}
-              style={{ '--word-dur': `${animDuration}ms` }}
-            >
-              <div ref={orpAlignRef} className="word-display__orp-align">
-                <WordInner word={currentWord} orpRef={orpRef} />
-              </div>
+        <div
+          className="drum-roller"
+          onDoubleClick={() => !finished && onWordDoubleClick?.()}
+        >
+          <div className="drum-slot drum-slot--neighbor" style={slotStyle(-2)} aria-hidden="true">{prevPrevWord}</div>
+          <div className="drum-slot drum-slot--neighbor" style={slotStyle(-1)} aria-hidden="true">{prevWord}</div>
+          <div className="drum-slot" style={slotStyle(0)}>
+            <div ref={orpAlignRef} className="word-display__orp-align">
+              <WordInner word={currentWord} orpRef={orpRef} />
             </div>
           </div>
-
-          <div key={nextKey} className="word-context word-context--next">{nextWord}</div>
-        </>
+          <div className="drum-slot drum-slot--neighbor" style={slotStyle(1)} aria-hidden="true">{nextWord}</div>
+          <div className="drum-slot drum-slot--neighbor" style={slotStyle(2)} aria-hidden="true">{nextNextWord}</div>
+        </div>
       )}
     </div>
   );

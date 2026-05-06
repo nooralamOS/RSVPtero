@@ -19,6 +19,7 @@
   --green: #50c878;
   --radius: 10px;
   --font: 'Inter', system-ui, sans-serif;
+  --font-word: 'Libre Baskerville', Georgia, serif;
 
   /* Easing — animations.md */
   --ease-out-quad: cubic-bezier(0.25, 0.46, 0.45, 0.94);
@@ -327,24 +328,6 @@ html, body, #root {
   position: relative;
 }
 
-.word-context {
-  font-size: 1rem;
-  color: var(--text-muted);
-  height: 1.5em;
-  user-select: none;
-  letter-spacing: 0.02em;
-  transition: color 0.15s ease;
-  animation: ctx-fade-in 180ms var(--ease-out-quad) both;
-}
-
-@keyframes ctx-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-.word-context--prev { margin-bottom: 28px; }
-.word-context--next { margin-top: 28px; }
-
 /* ── Drag-to-scrub cursor (visible while paused) ──── */
 .reader__stage--paused {
   cursor: grab;
@@ -355,35 +338,41 @@ html, body, #root {
   user-select: none;
 }
 
-/* ── Reduced motion overrides ────────────────────── */
-@media (prefers-reduced-motion: reduce) {
-  .word-display--enter-fwd,
-  .word-display--exit-fwd,
-  .word-display--enter-bwd,
-  .word-display--exit-bwd,
-  .word-context {
-    animation: none;
-  }
-
-}
-
-/* ── Word animation container ─────────────────────── */
-.word-center {
+/* ── Drum Roller — all animation driven by inline transforms ── */
+.drum-roller {
   position: relative;
+  width: 100%;
+  height: 220px;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 120px;
-  width: 100%;
   user-select: none;
 }
 
-.word-display {
+.drum-slot {
+  position: absolute;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 72px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+  font-family: var(--font-word);
+  white-space: nowrap;
   will-change: transform, opacity;
-  width: 100%;
+  pointer-events: none;
+}
+
+/* Centre slot is the only interactive one */
+.drum-slot:not(.drum-slot--neighbor) {
+  pointer-events: auto;
+}
+
+/* Neighbour text uses the muted colour; WordInner spans override for the current slot */
+.drum-slot--neighbor {
+  color: var(--text-muted);
 }
 
 .word-display__orp-align {
@@ -393,55 +382,12 @@ html, body, #root {
   will-change: transform;
 }
 
-/* Exit word overlays the center area absolutely */
-.word-display--exit {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-/* Forward (index increasing): words scroll upward */
-.word-display--enter-fwd {
-  animation: word-enter-fwd var(--word-dur, 200ms) var(--ease-out-cubic) both;
-}
-.word-display--exit-fwd {
-  animation: word-exit-fwd var(--word-dur, 200ms) var(--ease-out-cubic) both;
-}
-
-/* Backward (index decreasing): words scroll downward */
-.word-display--enter-bwd {
-  animation: word-enter-bwd var(--word-dur, 200ms) var(--ease-out-cubic) both;
-}
-.word-display--exit-bwd {
-  animation: word-exit-bwd var(--word-dur, 200ms) var(--ease-out-cubic) both;
-}
-
-@keyframes word-enter-fwd {
-  from { opacity: 0; transform: translateY(22px) scale(0.93); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes word-exit-fwd {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to   { opacity: 0; transform: translateY(-22px) scale(0.93); }
-}
-@keyframes word-enter-bwd {
-  from { opacity: 0; transform: translateY(-22px) scale(0.93); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes word-exit-bwd {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to   { opacity: 0; transform: translateY(22px) scale(0.93); }
-}
-
 .word-display__word {
   font-size: 72px;
-  font-weight: var(--font-weight-bold);
+  font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.1;
-  font-family: 'Georgia', serif;
+  font-family: var(--font-word);
   display: inline-block;
   white-space: nowrap;
 }
