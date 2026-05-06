@@ -16,8 +16,8 @@ export default function Uploader({ onLoad }) {
     setError('');
     setLoading(true);
     try {
-      const { text, pageWordCounts, pdfData } = await extractPDFData(file);
-      onLoad({ text, name: file.name, pageWordCounts, pdfData });
+      const { text, pageWordCounts, pageWordBoxes, pdfData } = await extractPDFData(file);
+      onLoad({ text, name: file.name, pageWordCounts, pageWordBoxes, pdfData });
     } catch (e) {
       console.error(e);
       setError('Failed to parse PDF. Try another file.');
@@ -25,6 +25,23 @@ export default function Uploader({ onLoad }) {
       setLoading(false);
     }
   }, [onLoad]);
+
+  const loadPreloaded = useCallback(async ({ url, fileName }) => {
+    setError('');
+    setLoading(true);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+      const blob = await res.blob();
+      const file = new File([blob], fileName, { type: 'application/pdf' });
+      await processFile(file);
+    } catch (e) {
+      console.error(e);
+      setError('Failed to load the preloaded PDF. Make sure the file exists in /books.');
+    } finally {
+      setLoading(false);
+    }
+  }, [processFile]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
@@ -68,6 +85,33 @@ export default function Uploader({ onLoad }) {
           style={{ display: 'none' }}
           onChange={handleFileChange}
         />
+      </div>
+
+      <div className="uploader__preloaded">
+        <div className="uploader__preloaded-label">Preloaded books</div>
+        <div className="uploader__preloaded-row">
+          <button
+            className="uploader__preloaded-btn"
+            disabled={loading}
+            onClick={() => loadPreloaded({ url: `${import.meta.env.BASE_URL}books/Dune pdf.pdf`, fileName: 'Dune.pdf' })}
+          >
+            Dune
+          </button>
+          <button
+            className="uploader__preloaded-btn"
+            disabled={loading}
+            onClick={() => loadPreloaded({ url: `${import.meta.env.BASE_URL}books/Dune Messiah - Frank Herbert.pdf`, fileName: 'Dune Messiah - Frank Herbert.pdf' })}
+          >
+            Dune Messiah
+          </button>
+          <button
+            className="uploader__preloaded-btn"
+            disabled={loading}
+            onClick={() => loadPreloaded({ url: `${import.meta.env.BASE_URL}books/Iqbal thesis - development of metaphysics.pdf`, fileName: 'Iqbal.pdf' })}
+          >
+            Iqbal
+          </button>
+        </div>
       </div>
 
       {loading && <p className="uploader__loading">Parsing PDF…</p>}

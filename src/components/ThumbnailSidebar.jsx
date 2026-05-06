@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, memo } from 'react';
-import { pdfjsLib } from '../utils/pdfParser';
+import { useEffect, useLayoutEffect, useRef, useState, memo } from 'react';
+import { pdfjsLib, pdfDocumentBaseOptions } from '../utils/pdfParser';
 
 async function renderPageToCanvas(pdf, pageNum, canvas) {
   if (!canvas) return;
   const page = await pdf.getPage(pageNum);
-  const nativeVp = page.getViewport({ scale: 1 });
+  const rotation = page.rotate || 0;
+  const nativeVp = page.getViewport({ scale: 1, rotation });
   const scale = 148 / nativeVp.width;
-  const viewport = page.getViewport({ scale });
+  const viewport = page.getViewport({ scale, rotation });
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
@@ -14,7 +15,7 @@ async function renderPageToCanvas(pdf, pageNum, canvas) {
 
 // memo() prevents re-renders on every word — this only re-renders when currentPage changes
 // (roughly once per page, not once per word).
-export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageStarts, currentPage, onSeek }) {
+export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageStarts, currentPage, onSeek, onPreview }) {
   const [numPages, setNumPages] = useState(0);
   const pdfRef = useRef(null);
   const listRef = useRef(null);
@@ -23,7 +24,10 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
   useEffect(() => {
     if (!pdfData) return;
     let cancelled = false;
-    pdfjsLib.getDocument({ data: new Uint8Array(pdfData.slice(0)) }).promise
+    pdfjsLib.getDocument({
+      data: new Uint8Array(pdfData.slice(0)),
+      ...pdfDocumentBaseOptions,
+    }).promise
       .then((pdf) => {
         if (cancelled) return;
         pdfRef.current = pdf;
@@ -55,12 +59,14 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
     return () => observer.disconnect();
   }, [numPages]);
 
-  // Scroll active page into view when currentPage changes
-  useEffect(() => {
+  // Scroll active page into view when currentPage changes, and again once thumbnails exist
+  // (sidebar unmounts when closed; on open numPages is 0 until PDF loads, so a currentPage-only effect would miss).
+  useLayoutEffect(() => {
+    if (numPages === 0 || !listRef.current) return;
     listRef.current
-      ?.querySelector(`[data-page="${currentPage + 1}"]`)
-      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }, [currentPage]);
+      .querySelector(`[data-page="${currentPage + 1}"]`)
+      ?.scrollIntoView({ block: 'end', behavior: 'auto' });
+  }, [currentPage, numPages]);
 
   return (
     <div className="thumb-sidebar">
@@ -73,6 +79,7 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
             data-page={i + 1}
             className={`thumb-page${i === currentPage ? ' thumb-page--active' : ''}`}
             onClick={() => onSeek(pageStarts[i] ?? 0)}
+            onDoubleClick={(e) => onPreview?.(i, e.currentTarget.getBoundingClientRect())}
           >
             <div className="thumb-page__img">
               <canvas />

@@ -14,10 +14,13 @@ export function getDelayMultiplier(word) {
   return 1;
 }
 
-// ORP: ~30% into the word, minimum index 0
 export function getORPIndex(word) {
-  if (word.length <= 1) return 0;
-  return Math.max(0, Math.floor(word.length * 0.3) - 1);
+  const len = word.length;
+  if (len <= 1) return 0;
+  if (len <= 3) return 1;
+  if (len <= 5) return 2;
+  if (len <= 9) return 3;
+  return 4;
 }
 
 export function formatTime(seconds) {

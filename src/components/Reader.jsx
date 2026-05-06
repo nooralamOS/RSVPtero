@@ -1,36 +1,26 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import Controls from './Controls';
 import ThumbnailSidebar from './ThumbnailSidebar';
+import PagePreviewPopup from './PagePreviewPopup';
 import { tokenizeText, getDelayMultiplier, getORPIndex, formatTime, detectChapters } from '../utils/wordUtils';
 
-function wordFontSize(word) {
-  const len = word.length;
-  if (len <= 4) return 96;
-  if (len <= 6) return 80;
-  if (len <= 9) return 68;
-  if (len <= 13) return 56;
-  return 48;
-}
-
-// ORP-highlighted word span — no layout concerns, just the text
-function WordInner({ word }) {
+function WordInner({ word, orpRef }) {
   if (!word) return null;
   const orpIdx = getORPIndex(word);
   const before = word.slice(0, orpIdx);
   const orp = word[orpIdx];
   const after = word.slice(orpIdx + 1);
-  const size = wordFontSize(word);
   return (
-    <span className="word-display__word" style={{ fontSize: `${size}px` }}>
+    <span className="word-display__word">
       <span className="word-display__before">{before}</span>
-      <span className="word-display__orp">{orp}</span>
+      <span ref={orpRef} className="word-display__orp">{orp}</span>
       <span className="word-display__after">{after}</span>
     </span>
   );
 }
 
 // Animated word stage: smooth enter/exit transitions + scroll scrubbing when paused
-function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRestart }) {
+function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRestart, onWordRect, onWordDoubleClick }) {
   const animDuration = wpm >= 200 ? 150 : 250;
   const [animKey, setAnimKey] = useState(0);
   const [exitWord, setExitWord] = useState(null);
@@ -38,8 +28,12 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
   const prevIndexRef = useRef(index);
   const exitTimerRef = useRef(null);
   const stageRef = useRef(null);
+  const orpAlignRef = useRef(null);
+  const orpRef = useRef(null);
   const scrollCooldownRef = useRef(false);
   const touchStartYRef = useRef(null);
+  const dragRef = useRef({ active: false, lastY: 0, accum: 0 });
+  const DRAG_PX = 32;
 
   // Refs so scroll handler is stable and never goes stale
   const indexRef = useRef(index);
@@ -74,11 +68,15 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
     setTimeout(() => { scrollCooldownRef.current = false; }, 150);
   }, []);
 
-  // Attach scroll + touch listeners only while paused
+  // No-cooldown seek for drag (threshold is the rate limiter)
+  const seekDirect = useCallback((dir) => {
+    const next = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + dir));
+    onSeekRef.current(next);
+  }, []);
+
+  // Attach scroll + touch + mouse-drag listeners while paused
   useEffect(() => {
     if (playing || finished) return;
-    const el = stageRef.current;
-    if (!el) return;
 
     const onWheel = (e) => {
       e.preventDefault();
@@ -96,28 +94,109 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
         touchStartYRef.current = e.touches[0].clientY;
       }
     };
-
-    el.addEventListener('wheel', onWheel, { passive: false });
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    return () => {
-      el.removeEventListener('wheel', onWheel);
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
+    const onMouseDown = (e) => {
+      dragRef.current = { active: true, lastY: e.clientY, accum: 0 };
+      stageRef.current?.classList.add('reader__stage--dragging');
+      e.preventDefault();
     };
-  }, [playing, finished, advanceOne]);
+    const onMouseMove = (e) => {
+      if (!dragRef.current.active) return;
+      const dy = e.clientY - dragRef.current.lastY;
+      dragRef.current.lastY = e.clientY;
+      dragRef.current.accum += dy;
+      while (dragRef.current.accum <= -DRAG_PX) {
+        seekDirect(1);
+        dragRef.current.accum += DRAG_PX;
+      }
+      while (dragRef.current.accum >= DRAG_PX) {
+        seekDirect(-1);
+        dragRef.current.accum -= DRAG_PX;
+      }
+    };
+    const onMouseUp = () => {
+      if (!dragRef.current.active) return;
+      dragRef.current.active = false;
+      stageRef.current?.classList.remove('reader__stage--dragging');
+    };
+
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    // Bind wheel/touch to the stage only so scrolling the thumbnail sidebar (or
+    // controls/topbar) does not scrub words.
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    stage.addEventListener('touchstart', onTouchStart, { passive: true });
+    stage.addEventListener('touchmove', onTouchMove, { passive: false });
+    stage.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    return () => {
+      stage.removeEventListener('wheel', onWheel);
+      stage.removeEventListener('touchstart', onTouchStart);
+      stage.removeEventListener('touchmove', onTouchMove);
+      stage.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [playing, finished, advanceOne, seekDirect]);
+
+  const alignOrpToStage = useCallback(() => {
+    const stage = stageRef.current;
+    const alignEl = orpAlignRef.current;
+    const orp = orpRef.current;
+    if (!stage || !alignEl || !orp || finished) return;
+    alignEl.style.transform = 'translateX(0px)';
+    const stageRect = stage.getBoundingClientRect();
+    const orpRect = orp.getBoundingClientRect();
+    const targetX = stageRect.left + stageRect.width / 2;
+    const orpCenterX = orpRect.left + orpRect.width / 2;
+    const dx = targetX - orpCenterX;
+    alignEl.style.transform = `translateX(${dx}px)`;
+  }, [finished]);
 
   const currentWord = words[index] ?? '';
+
+  useLayoutEffect(() => {
+    if (finished) return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      alignOrpToStage();
+      if (typeof onWordRect === 'function' && orpRef.current) {
+        onWordRect(orpRef.current.getBoundingClientRect());
+      }
+    };
+    run();
+    const ro = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(run)
+      : null;
+    if (ro && stageRef.current) ro.observe(stageRef.current);
+    let fontsDone = Promise.resolve();
+    if (typeof document !== 'undefined' && document.fonts?.ready) {
+      fontsDone = document.fonts.ready;
+    }
+    fontsDone.then(() => {
+      if (!cancelled) requestAnimationFrame(run);
+    });
+    return () => {
+      cancelled = true;
+      ro?.disconnect();
+    };
+  }, [currentWord, index, animKey, finished, alignOrpToStage, onWordRect]);
   const prevWord = index > 0 ? words[index - 1] : '';
   const nextWord = index < words.length - 1 ? words[index + 1] : '';
   const dirSuffix = direction > 0 ? 'fwd' : 'bwd';
-  const showScrollCue = !playing && !finished;
+  // Stable keys during playback so context words never remount while playing
+  const prevKey = playing ? 'prev' : `prev-${animKey}`;
+  const nextKey = playing ? 'next' : `next-${animKey}`;
 
   return (
     <div
       ref={stageRef}
-      className={`reader__stage${showScrollCue ? ' reader__stage--paused' : ''}`}
+      className={`reader__stage${!playing && !finished ? ' reader__stage--paused' : ''}`}
     >
+      <div className="reader__guideline reader__guideline--top" />
+      <div className="reader__guideline reader__guideline--bottom" />
       {finished ? (
         <div className="reader__finished">
           <h2>Done!</h2>
@@ -126,16 +205,10 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
         </div>
       ) : (
         <>
-          <div className={`stage-scroll-cue stage-scroll-cue--up${showScrollCue ? ' stage-scroll-cue--visible' : ''}`}>
-            <svg width="14" height="9" viewBox="0 0 14 9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="1,8 7,2 13,8" />
-            </svg>
-          </div>
+          <div key={prevKey} className="word-context word-context--prev">{prevWord}</div>
 
-          <div key={`prev-${animKey}`} className="word-context word-context--prev">{prevWord}</div>
-
-          <div className="word-center">
-            {exitWord && (
+          <div className="word-center" onDoubleClick={() => !finished && onWordDoubleClick?.()}>
+            {exitWord && !playing && (
               <div
                 key={`exit-${animKey}`}
                 className={`word-display word-display--exit word-display--exit-${dirSuffix}`}
@@ -146,27 +219,23 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
             )}
             <div
               key={`enter-${animKey}`}
-              className={`word-display${animKey > 0 ? ` word-display--enter-${dirSuffix}` : ''}`}
+              className={`word-display${!playing && animKey > 0 ? ` word-display--enter-${dirSuffix}` : ''}`}
               style={{ '--word-dur': `${animDuration}ms` }}
             >
-              <WordInner word={currentWord} />
+              <div ref={orpAlignRef} className="word-display__orp-align">
+                <WordInner word={currentWord} orpRef={orpRef} />
+              </div>
             </div>
           </div>
 
-          <div key={`next-${animKey}`} className="word-context word-context--next">{nextWord}</div>
-
-          <div className={`stage-scroll-cue stage-scroll-cue--down${showScrollCue ? ' stage-scroll-cue--visible' : ''}`}>
-            <svg width="14" height="9" viewBox="0 0 14 9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="1,1 7,7 13,1" />
-            </svg>
-          </div>
+          <div key={nextKey} className="word-context word-context--next">{nextWord}</div>
         </>
       )}
     </div>
   );
 }
 
-export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCounts }) {
+export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCounts, pageWordBoxes }) {
   const words = useRef([]);
   const [isReady, setIsReady] = useState(false);
   const [chapters, setChapters] = useState([]);
@@ -176,11 +245,17 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   const [wpm, setWpm] = useState(300);
   const [finished, setFinished] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPage, setPreviewPage] = useState(0);
+  const [previewAnchorRect, setPreviewAnchorRect] = useState(null);
+  const [previewSide, setPreviewSide] = useState('right');
+  const [wordRect, setWordRect] = useState(null);
 
   const playingRef = useRef(false);
   const wpmRef = useRef(wpm);
   const indexRef = useRef(0);
   const timeoutRef = useRef(null);
+  const nextAtRef = useRef(null);
 
   const pageStarts = useMemo(() => {
     if (!pageWordCounts?.length) return [];
@@ -221,6 +296,19 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   useEffect(() => { wpmRef.current = wpm; }, [wpm]);
   useEffect(() => { indexRef.current = index; }, [index]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
+  useEffect(() => { if (previewOpen) setPreviewPage(currentPage); }, [currentPage, previewOpen]);
+
+  const localWordIndex = useMemo(() => {
+    if (!pageStarts.length) return 0;
+    const start = pageStarts[currentPage] ?? 0;
+    return Math.max(0, index - start);
+  }, [index, currentPage, pageStarts]);
+
+  const highlightRect = useMemo(() => {
+    const page = pageWordBoxes?.[currentPage];
+    if (!page?.boxes?.length) return null;
+    return page.boxes[localWordIndex] ?? null;
+  }, [pageWordBoxes, currentPage, localWordIndex]);
 
   const scheduleNext = useCallback(() => {
     if (!playingRef.current) return;
@@ -237,9 +325,13 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     setIndex(i);
     indexRef.current = i + 1;
 
-    timeoutRef.current = setTimeout(() => {
-      scheduleNext();
-    }, ms);
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+    if (nextAtRef.current === null) nextAtRef.current = now;
+    nextAtRef.current += ms;
+    const delay = Math.max(0, nextAtRef.current - now);
+    timeoutRef.current = setTimeout(scheduleNext, delay);
   }, []);
 
   const play = useCallback(() => {
@@ -248,6 +340,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
       setIndex(0);
       setFinished(false);
     }
+    nextAtRef.current = null;
     playingRef.current = true;
     setPlaying(true);
     scheduleNext();
@@ -257,6 +350,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     playingRef.current = false;
     setPlaying(false);
     clearTimeout(timeoutRef.current);
+    nextAtRef.current = null;
   }, []);
 
   const restart = useCallback(() => {
@@ -275,6 +369,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     setFinished(false);
     if (!wasPaused) {
       setTimeout(() => {
+        nextAtRef.current = null;
         playingRef.current = true;
         setPlaying(true);
         scheduleNext();
@@ -291,6 +386,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     setFinished(false);
     if (!wasPaused) {
       setTimeout(() => {
+        nextAtRef.current = null;
         playingRef.current = true;
         setPlaying(true);
         scheduleNext();
@@ -316,7 +412,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
           break;
         case 'ArrowUp':
           e.preventDefault();
-          setWpm((w) => Math.min(1000, w + 50));
+          setWpm((w) => Math.min(2000, w + 50));
           break;
         case 'ArrowDown':
           e.preventDefault();
@@ -367,6 +463,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
           pageStarts={pageStarts}
           currentPage={currentPage}
           onSeek={seek}
+          onPreview={(pageIdx, rect) => { setPreviewPage(pageIdx); setPreviewAnchorRect(rect ?? null); setPreviewSide('right'); setPreviewOpen(true); }}
         />
       )}
       <div className="reader__main">
@@ -402,7 +499,27 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
           finished={finished}
           total={total}
           onRestart={restart}
+          onWordRect={setWordRect}
+          onWordDoubleClick={() => {
+            setPreviewPage(currentPage);
+            setPreviewAnchorRect(wordRect);
+            setPreviewSide('left');
+            setPreviewOpen(true);
+          }}
         />
+
+        {pdfData && (
+          <PagePreviewPopup
+            open={previewOpen}
+            pdfData={pdfData}
+            pageIndex={previewPage}
+            anchorRect={previewAnchorRect}
+            side={previewSide}
+            highlightRect={previewPage === currentPage ? highlightRect : null}
+            highlightPageIndex={currentPage}
+            onClose={() => setPreviewOpen(false)}
+          />
+        )}
 
         <Controls
           playing={playing}
