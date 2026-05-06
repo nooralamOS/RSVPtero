@@ -330,12 +330,19 @@ html, body, #root {
 
 /* ── Drag-to-scrub cursor (visible while paused) ──── */
 .reader__stage--paused {
-  cursor: grab;
+  cursor: default;
 }
 
 .reader__stage--dragging {
   cursor: grabbing;
   user-select: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  /* Show grab anywhere inside the word "box" area */
+  .reader__stage--paused .drum-roller:hover {
+    cursor: grab;
+  }
 }
 
 /* ── Drum Roller — all animation driven by inline transforms ── */
@@ -348,6 +355,7 @@ html, body, #root {
   justify-content: center;
   user-select: none;
 }
+
 
 .drum-slot {
   position: absolute;
@@ -612,6 +620,7 @@ html, body, #root {
 input[type="range"] {
   flex: 1;
   -webkit-appearance: none;
+  appearance: none;
   height: 4px;
   background: var(--border);
   border-radius: 4px;

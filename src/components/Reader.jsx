@@ -19,26 +19,42 @@ function WordInner({ word, orpRef }) {
   );
 }
 
-// Drum roller: all positions driven by a single dragOffsetPx value (-FULL to +FULL).
-// t = dragOffsetPx / FULL_DRAG_PX  (−1 … +1)
-// Each slot's effective position p = naturalPos − t
-// translateY = SLOT_GAP * p,  scale/opacity interpolated from |p|
-function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRestart, onWordRect, onWordDoubleClick }) {
-  const FULL_DRAG_PX = 70;   // pixels of drag = one full word transition
+// Drum roller: positions are driven by a single continuous `wordPos` float.
+// - wordPos = 0 means words[0] is centered; wordPos = 12.4 means you're between words[12] and words[13]
+// - centerIdx = round(wordPos)
+// - frac = wordPos - centerIdx
+// For a slot at relative offset k (… -2,-1,0,1,2 …):
+// - effective position p = k - frac
+// - translateY = SLOT_GAP * p,  scale/opacity interpolated from |p|
+function WordStage({ words, index, wpm, playing, onSeek, onScrubStart, onScrubEnd, finished, total, onRestart, onWordRect, onWordDoubleClick }) {
+  const FULL_DRAG_PX = 70;   // pixels of drag = one word of travel
   const SLOT_GAP     = 82;   // px between slot centres at rest
   const animDuration = wpm >= 300 ? 180 : wpm >= 200 ? 220 : 260;
+  const LONG_PRESS_MS = 220;
+  const DRAG_ARM_PX = 6;     // start drag after small movement (mouse/pen/touch)
 
   const stageRef        = useRef(null);
   const orpAlignRef     = useRef(null);
   const orpRef          = useRef(null);
   const isDraggingRef   = useRef(false);
   const dragStartYRef   = useRef(0);
-  const dragStartOffRef = useRef(0);
+  const dragStartPosRef = useRef(0);
+  const pointerDownYRef = useRef(0);
+  const pointerDownPosRef = useRef(0);
+  const longPressTimerRef = useRef(null);
+  const activePointerIdRef = useRef(null);
+  const lastPointerYRef = useRef(0);
+  const [wordAreaHovering, setWordAreaHovering] = useState(false);
   const snapRafRef      = useRef(null);
-  const scrollCoolRef   = useRef(false);
+  const wheelRafRef     = useRef(null);
+  const wheelVelRef     = useRef(0);     // words per ms
+  const wheelLastTsRef  = useRef(0);
+  const scrubbingRef    = useRef(false);
 
-  const [dragOffsetPx, setDragOffsetPx] = useState(0);
-  const dragOffRef = useRef(0);
+  const [wordPos, setWordPos] = useState(index);
+  const wordPosRef = useRef(index);
+  const snappingRef = useRef(false);
+  const lastSeekSentRef = useRef(index);
 
   const indexRef    = useRef(index);
   const onSeekRef   = useRef(onSeek);
@@ -49,150 +65,231 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
   useEffect(() => { wordsLenRef.current = words.length;  }, [words.length]);
   useEffect(() => { durRef.current      = animDuration;  }, [animDuration]);
 
-  // Reset offset when playback starts
+  // Keep the wheel aligned to the current index during playback,
+  // and when we're not actively dragging/snapping.
   useEffect(() => {
-    if (!playing) return;
-    cancelAnimationFrame(snapRafRef.current);
-    dragOffRef.current = 0;
-    setDragOffsetPx(0);
-  }, [playing]);
+    if (finished) return;
+    if (isDraggingRef.current || snappingRef.current) return;
+    wordPosRef.current = index;
+    setWordPos(index);
+    lastSeekSentRef.current = index;
+  }, [index, playing, finished]);
 
   useEffect(() => () => cancelAnimationFrame(snapRafRef.current), []);
+  useEffect(() => () => cancelAnimationFrame(wheelRafRef.current), []);
+  useEffect(() => () => clearTimeout(longPressTimerRef.current), []);
 
-  // Animate dragOffsetPx → target with ease-out-cubic
+  // Animate wordPos → target with ease-out-cubic
   const snapTo = useCallback((target, dur) => {
     cancelAnimationFrame(snapRafRef.current);
     const duration   = dur ?? durRef.current;
-    const startVal   = dragOffRef.current;
-    if (Math.abs(startVal - target) < 0.5) {
-      dragOffRef.current = target;
-      setDragOffsetPx(target);
+    const startVal   = wordPosRef.current;
+    if (Math.abs(startVal - target) < 0.002) {
+      wordPosRef.current = target;
+      setWordPos(target);
       return;
     }
+    snappingRef.current = true;
     const t0 = performance.now();
     function tick(now) {
       const p = Math.min((now - t0) / duration, 1);
       const e = 1 - Math.pow(1 - p, 3);
       const v = startVal + (target - startVal) * e;
-      dragOffRef.current = v;
-      setDragOffsetPx(v);
-      if (p < 1) snapRafRef.current = requestAnimationFrame(tick);
+      wordPosRef.current = v;
+      setWordPos(v);
+      if (p < 1) {
+        snapRafRef.current = requestAnimationFrame(tick);
+      } else {
+        snappingRef.current = false;
+      }
     }
     snapRafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  // Advance index and start animation from the natural "from" position
-  const commitAndAnimate = useCallback((dir) => {
-    const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + dir));
-    if (target === indexRef.current) return;
-    // After index updates, the new current slot (naturalPos 0) should start
-    // where it visually was as a neighbour, then snap to centre.
-    // That starting offset = −dir * FULL_DRAG_PX.
-    dragOffRef.current = -dir * FULL_DRAG_PX;
-    setDragOffsetPx(-dir * FULL_DRAG_PX);
-    onSeekRef.current(target);
-    snapTo(0, durRef.current);
-  }, [snapTo]);
+  const clampIndex = useCallback((i) => Math.max(0, Math.min(wordsLenRef.current - 1, i)), []);
 
-  // Finish a drag gesture: commit or snap back
+  const sendSeekIfChanged = useCallback((nextIdx) => {
+    const clamped = clampIndex(nextIdx);
+    if (clamped === lastSeekSentRef.current) return;
+    lastSeekSentRef.current = clamped;
+    onSeekRef.current(clamped);
+  }, [clampIndex]);
+
+  const applyDragAtY = useCallback((clientY) => {
+    const dy  = dragStartYRef.current - clientY;
+    const nextPos = dragStartPosRef.current + (dy / FULL_DRAG_PX);
+    wordPosRef.current = nextPos;
+    setWordPos(nextPos);
+    sendSeekIfChanged(Math.round(nextPos));
+  }, [sendSeekIfChanged]);
+
+  const beginDragFromPointerDown = useCallback(() => {
+    cancelAnimationFrame(snapRafRef.current);
+    isDraggingRef.current = true;
+    dragStartYRef.current = pointerDownYRef.current;
+    dragStartPosRef.current = pointerDownPosRef.current;
+    stageRef.current?.classList.add('reader__stage--dragging');
+    // Apply immediately so drag feels instant when it arms.
+    applyDragAtY(lastPointerYRef.current);
+  }, [applyDragAtY]);
+
+  // Snap to nearest word
   const handleRelease = useCallback(() => {
     isDraggingRef.current = false;
     stageRef.current?.classList.remove('reader__stage--dragging');
-    const d = dragOffRef.current;
-    const t = d / FULL_DRAG_PX;
+    const targetIdx = clampIndex(Math.round(wordPosRef.current));
+    // Ensure the rest of the app is synced to where we snapped.
+    sendSeekIfChanged(targetIdx);
 
-    if (t > 0.35) {
-      // Commit forward — continue smoothly from current visual position
-      const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current + 1));
-      if (target !== indexRef.current) {
-        const after = d - FULL_DRAG_PX; // negative — new current starts slightly below centre
-        dragOffRef.current = after;
-        setDragOffsetPx(after);
-        onSeekRef.current(target);
-        snapTo(0, durRef.current * (FULL_DRAG_PX - d) / FULL_DRAG_PX);
-      } else {
-        snapTo(0);
-      }
-    } else if (t < -0.35) {
-      // Commit backward
-      const target = Math.max(0, Math.min(wordsLenRef.current - 1, indexRef.current - 1));
-      if (target !== indexRef.current) {
-        const after = FULL_DRAG_PX + d; // positive — new current starts slightly above centre
-        dragOffRef.current = after;
-        setDragOffsetPx(after);
-        onSeekRef.current(target);
-        snapTo(0, durRef.current * (FULL_DRAG_PX + d) / FULL_DRAG_PX);
-      } else {
-        snapTo(0);
-      }
-    } else {
-      snapTo(0);
-    }
+    const dist = Math.abs(wordPosRef.current - targetIdx); // in words
+    const dur = Math.max(90, durRef.current * Math.min(1, dist));
+    snapTo(targetIdx, dur);
   }, [snapTo]);
 
-  // Attach wheel + touch + mouse listeners (paused only)
+  // Attach wheel + pointer listeners (paused only)
   useEffect(() => {
-    if (playing || finished) return;
+    if (finished) return;
+    const endScrubIfNeeded = () => {
+      if (!scrubbingRef.current) return;
+      scrubbingRef.current = false;
+      onScrubEnd?.();
+    };
+    const stopWheelInertia = () => {
+      if (!wheelRafRef.current) return;
+      wheelVelRef.current = 0;
+      cancelAnimationFrame(wheelRafRef.current);
+      wheelRafRef.current = null;
+      snappingRef.current = false;
+      endScrubIfNeeded();
+      handleRelease();
+    };
 
     const onWheel = (e) => {
       e.preventDefault();
-      if (scrollCoolRef.current) return;
-      scrollCoolRef.current = true;
       cancelAnimationFrame(snapRafRef.current);
-      commitAndAnimate(e.deltaY > 0 ? 1 : -1);
-      setTimeout(() => { scrollCoolRef.current = false; }, durRef.current + 30);
+      if (!scrubbingRef.current) {
+        scrubbingRef.current = true;
+        onScrubStart?.();
+      }
+
+      // PDF-like: apply wheel delta immediately (no lag),
+      // then let inertia continue the motion after input stops.
+      const now = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+      const deltaPx =
+        e.deltaMode === 1 ? e.deltaY * 16 : // DOM_DELTA_LINE
+        e.deltaMode === 2 ? e.deltaY * (typeof window !== 'undefined' ? window.innerHeight : 800) : // DOM_DELTA_PAGE
+        e.deltaY; // DOM_DELTA_PIXEL
+
+      const deltaWords = (deltaPx / FULL_DRAG_PX);
+
+      // Immediate position update
+      let nextPos = wordPosRef.current + deltaWords;
+      const minPos = 0;
+      const maxPos = Math.max(0, wordsLenRef.current - 1);
+      if (nextPos < minPos) nextPos = minPos;
+      if (nextPos > maxPos) nextPos = maxPos;
+      wordPosRef.current = nextPos;
+      setWordPos(nextPos);
+      sendSeekIfChanged(Math.round(nextPos));
+
+      // Velocity impulse (words per ms). Use wheel-event dt for stability.
+      const dt = wheelLastTsRef.current ? Math.max(8, Math.min(60, now - wheelLastTsRef.current)) : 16;
+      wheelLastTsRef.current = now;
+      const instVel = deltaWords / dt;
+      const prevVel = wheelVelRef.current;
+      const prevSign = Math.sign(prevVel);
+      const instSign = Math.sign(instVel);
+
+      if (prevSign !== 0 && instSign !== 0 && prevSign !== instSign) {
+        // Opposite-direction input should cancel momentum quickly.
+        wheelVelRef.current = prevVel * 0.15 + instVel * 0.85;
+      } else {
+        // Normal smoothing.
+        wheelVelRef.current = prevVel * 0.55 + instVel * 0.45;
+      }
+
+      if (wheelRafRef.current) return;
+      snappingRef.current = true; // prevent prop-index sync while inertia runs
+
+      const step = (ts) => {
+        const last = wheelLastTsRef.current || ts;
+        const dt = Math.min(48, Math.max(0, ts - last)); // ms
+        wheelLastTsRef.current = ts;
+
+        // Integrate
+        let nextPos = wordPosRef.current + wheelVelRef.current * dt;
+
+        // Clamp + damp at edges
+        const minPos = 0;
+        const maxPos = Math.max(0, wordsLenRef.current - 1);
+        if (nextPos < minPos) {
+          nextPos = minPos;
+          wheelVelRef.current *= 0.2;
+        } else if (nextPos > maxPos) {
+          nextPos = maxPos;
+          wheelVelRef.current *= 0.2;
+        }
+
+        wordPosRef.current = nextPos;
+        setWordPos(nextPos);
+        sendSeekIfChanged(Math.round(nextPos));
+
+        // Friction
+        const decayPer16 = 0.90;
+        const decay = Math.pow(decayPer16, dt / 16);
+        wheelVelRef.current *= decay;
+
+        if (Math.abs(wheelVelRef.current) < 0.001) {
+          wheelVelRef.current = 0;
+          wheelRafRef.current = null;
+          snappingRef.current = false;
+          endScrubIfNeeded();
+          handleRelease();
+          return;
+        }
+
+        wheelRafRef.current = requestAnimationFrame(step);
+      };
+
+      wheelRafRef.current = requestAnimationFrame(step);
     };
-    const onTouchStart = (e) => {
-      cancelAnimationFrame(snapRafRef.current);
-      isDraggingRef.current  = true;
-      dragStartYRef.current  = e.touches[0].clientY;
-      dragStartOffRef.current = dragOffRef.current;
-    };
-    const onTouchMove = (e) => {
-      e.preventDefault();
+
+    const onPointerMove = (e) => {
       if (!isDraggingRef.current) return;
-      const dy  = dragStartYRef.current - e.touches[0].clientY;
-      const val = Math.max(-FULL_DRAG_PX, Math.min(FULL_DRAG_PX, dragStartOffRef.current + dy));
-      dragOffRef.current = val;
-      setDragOffsetPx(val);
+      if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+      applyDragAtY(e.clientY);
     };
-    const onTouchEnd = () => { if (isDraggingRef.current) handleRelease(); };
-    const onMouseDown = (e) => {
-      cancelAnimationFrame(snapRafRef.current);
-      isDraggingRef.current  = true;
-      dragStartYRef.current  = e.clientY;
-      dragStartOffRef.current = dragOffRef.current;
-      stageRef.current?.classList.add('reader__stage--dragging');
-      e.preventDefault();
+    const onPointerUp = (e) => {
+      if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+      clearTimeout(longPressTimerRef.current);
+      activePointerIdRef.current = null;
+      if (isDraggingRef.current) handleRelease();
+      endScrubIfNeeded();
     };
-    const onMouseMove = (e) => {
-      if (!isDraggingRef.current) return;
-      const dy  = dragStartYRef.current - e.clientY;
-      const val = Math.max(-FULL_DRAG_PX, Math.min(FULL_DRAG_PX, dragStartOffRef.current + dy));
-      dragOffRef.current = val;
-      setDragOffsetPx(val);
+    const onPointerCancel = () => {
+      clearTimeout(longPressTimerRef.current);
+      activePointerIdRef.current = null;
+      if (isDraggingRef.current) handleRelease();
+      endScrubIfNeeded();
     };
-    const onMouseUp = () => { if (isDraggingRef.current) handleRelease(); };
 
     const stage = stageRef.current;
     if (!stage) return;
-    stage.addEventListener('wheel',      onWheel,      { passive: false });
-    stage.addEventListener('touchstart', onTouchStart, { passive: true  });
-    stage.addEventListener('touchmove',  onTouchMove,  { passive: false });
-    stage.addEventListener('touchend',   onTouchEnd);
-    stage.addEventListener('mousedown',  onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup',   onMouseUp);
+    stage.addEventListener('wheel', onWheel, { passive: false });
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
+    // Best-effort stop when user re-engages pointer while coasting.
+    window.addEventListener('pointerdown', stopWheelInertia, { capture: true });
+
     return () => {
-      stage.removeEventListener('wheel',      onWheel);
-      stage.removeEventListener('touchstart', onTouchStart);
-      stage.removeEventListener('touchmove',  onTouchMove);
-      stage.removeEventListener('touchend',   onTouchEnd);
-      stage.removeEventListener('mousedown',  onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup',   onMouseUp);
+      stage.removeEventListener('wheel', onWheel);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('pointerdown', stopWheelInertia, { capture: true });
     };
-  }, [playing, finished, commitAndAnimate, handleRelease]);
+  }, [finished, handleRelease, sendSeekIfChanged, snapTo, applyDragAtY, onScrubStart, onScrubEnd]);
 
   const alignOrpToStage = useCallback(() => {
     const stage   = stageRef.current;
@@ -207,7 +304,12 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
     alignEl.style.transform = `translateX(${targetX - orpCenterX}px)`;
   }, [finished]);
 
-  const currentWord = words[index] ?? '';
+  const getWordAt = (i) => (i >= 0 && i < words.length ? words[i] : '');
+
+  // Slot transform: k is the slot offset from the current centre word.
+  const centerIdx = clampIndex(Math.round(wordPos));
+  const frac = wordPos - centerIdx;
+  const currentWord = getWordAt(centerIdx);
 
   useLayoutEffect(() => {
     if (finished) return;
@@ -226,12 +328,9 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
     if (typeof document !== 'undefined' && document.fonts?.ready) fontsDone = document.fonts.ready;
     fontsDone.then(() => { if (!cancelled) requestAnimationFrame(run); });
     return () => { cancelled = true; ro?.disconnect(); };
-  }, [currentWord, index, finished, alignOrpToStage, onWordRect]);
-
-  // Slot transform: naturalPos ∈ {−2,−1,0,1,2}, t drives animation
-  const t = dragOffsetPx / FULL_DRAG_PX;
-  function slotStyle(naturalPos) {
-    const p    = naturalPos - t;
+  }, [currentWord, centerIdx, finished, alignOrpToStage, onWordRect]);
+  function slotStyle(k) {
+    const p    = k - frac;
     const absP = Math.abs(p);
     const translateY = SLOT_GAP * p;
     const scale   = absP <= 1 ? 1 - 0.45 * absP : Math.max(0.05, 0.55 - 0.375 * (absP - 1));
@@ -239,10 +338,7 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
     return { transform: `translateY(${translateY}px) scale(${scale})`, opacity };
   }
 
-  const prevPrevWord = index > 1              ? words[index - 2] : '';
-  const prevWord     = index > 0              ? words[index - 1] : '';
-  const nextWord     = index < words.length-1 ? words[index + 1] : '';
-  const nextNextWord = index < words.length-2 ? words[index + 2] : '';
+  const windowOffsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
 
   return (
     <div
@@ -261,16 +357,104 @@ function WordStage({ words, index, wpm, playing, onSeek, finished, total, onRest
         <div
           className="drum-roller"
           onDoubleClick={() => !finished && onWordDoubleClick?.()}
+          onPointerEnter={(e) => {
+            if (playing || finished) return;
+            if (e.pointerType === 'mouse' || e.pointerType === 'pen') setWordAreaHovering(true);
+          }}
+          onPointerLeave={(e) => {
+            if (e.pointerType === 'mouse' || e.pointerType === 'pen') setWordAreaHovering(false);
+          }}
+          onPointerDown={(e) => {
+            if (finished) return;
+            // Don't require a prior hover event to arm dragging; after pause the first interaction
+            // can happen before onPointerEnter fires, which made the first drag attempt a no-op.
+
+            e.stopPropagation();
+            // Avoid interfering with desktop double-click; prevent default on touch only.
+            if (e.pointerType === 'touch') e.preventDefault();
+            if (!scrubbingRef.current) {
+              scrubbingRef.current = true;
+              onScrubStart?.();
+            }
+
+            // Stop wheel inertia on intentional scrub gesture.
+            wheelVelRef.current = 0;
+            if (wheelRafRef.current) {
+              cancelAnimationFrame(wheelRafRef.current);
+              wheelRafRef.current = null;
+            }
+
+            clearTimeout(longPressTimerRef.current);
+            activePointerIdRef.current = e.pointerId;
+            lastPointerYRef.current = e.clientY;
+            pointerDownYRef.current = e.clientY;
+            pointerDownPosRef.current = wordPosRef.current;
+            try { e.currentTarget.setPointerCapture?.(e.pointerId); } catch { /* ignore */ }
+
+            longPressTimerRef.current = setTimeout(() => {
+              if (activePointerIdRef.current !== e.pointerId) return;
+              lastSeekSentRef.current = clampIndex(Math.round(wordPosRef.current));
+              beginDragFromPointerDown();
+            }, LONG_PRESS_MS);
+          }}
+          onPointerMove={(e) => {
+            if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+            lastPointerYRef.current = e.clientY;
+            // Start dragging immediately once the user actually drags (no need to long-press).
+            if (!isDraggingRef.current && activePointerIdRef.current !== null) {
+              const dy = Math.abs(e.clientY - pointerDownYRef.current);
+              if (dy >= DRAG_ARM_PX) {
+                clearTimeout(longPressTimerRef.current);
+                lastSeekSentRef.current = clampIndex(Math.round(wordPosRef.current));
+                beginDragFromPointerDown();
+              }
+            }
+          }}
+          onPointerUp={(e) => {
+            if (activePointerIdRef.current !== null && e.pointerId !== activePointerIdRef.current) return;
+            clearTimeout(longPressTimerRef.current);
+            activePointerIdRef.current = null;
+            if (isDraggingRef.current) handleRelease();
+            if (scrubbingRef.current) {
+              scrubbingRef.current = false;
+              onScrubEnd?.();
+            }
+          }}
+          onPointerCancel={() => {
+            clearTimeout(longPressTimerRef.current);
+            activePointerIdRef.current = null;
+            if (isDraggingRef.current) handleRelease();
+            if (scrubbingRef.current) {
+              scrubbingRef.current = false;
+              onScrubEnd?.();
+            }
+          }}
         >
-          <div className="drum-slot drum-slot--neighbor" style={slotStyle(-2)} aria-hidden="true">{prevPrevWord}</div>
-          <div className="drum-slot drum-slot--neighbor" style={slotStyle(-1)} aria-hidden="true">{prevWord}</div>
-          <div className="drum-slot" style={slotStyle(0)}>
-            <div ref={orpAlignRef} className="word-display__orp-align">
-              <WordInner word={currentWord} orpRef={orpRef} />
-            </div>
-          </div>
-          <div className="drum-slot drum-slot--neighbor" style={slotStyle(1)} aria-hidden="true">{nextWord}</div>
-          <div className="drum-slot drum-slot--neighbor" style={slotStyle(2)} aria-hidden="true">{nextNextWord}</div>
+          {windowOffsets.map((k) => {
+            const wordIdx = centerIdx + k;
+            const isCenter = k === 0;
+            const word = isCenter ? getWordAt(centerIdx) : getWordAt(wordIdx);
+            if (!word) return null;
+            return (
+              <div
+                key={`${wordIdx}:${k}`}
+                className={`drum-slot${isCenter ? '' : ' drum-slot--neighbor'}`}
+                style={slotStyle(k)}
+                aria-hidden={!isCenter}
+              >
+                {isCenter ? (
+                  <div
+                    ref={orpAlignRef}
+                    className="word-display__orp-align"
+                  >
+                    <WordInner word={word} orpRef={orpRef} />
+                  </div>
+                ) : (
+                  word
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -395,6 +579,18 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     nextAtRef.current = null;
   }, []);
 
+  const scrubWasPlayingRef = useRef(false);
+  const handleScrubStart = useCallback(() => {
+    scrubWasPlayingRef.current = !!playingRef.current;
+    if (scrubWasPlayingRef.current) pause();
+  }, [pause]);
+  const handleScrubEnd = useCallback(() => {
+    if (scrubWasPlayingRef.current) {
+      scrubWasPlayingRef.current = false;
+      play();
+    }
+  }, [play]);
+
   const restart = useCallback(() => {
     pause();
     indexRef.current = 0;
@@ -438,7 +634,15 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target.tagName === 'INPUT') return;
+      // Keep global shortcuts working even when the WPM slider (range input) is focused.
+      // Still ignore typing-focused controls (text inputs, textareas, contentEditable).
+      const target = e.target;
+      const tag = target?.tagName;
+      const isTextLikeInput =
+        tag === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        (tag === 'INPUT' && target?.type !== 'range');
+      if (isTextLikeInput) return;
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -538,6 +742,8 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
           wpm={wpm}
           playing={playing}
           onSeek={seek}
+          onScrubStart={handleScrubStart}
+          onScrubEnd={handleScrubEnd}
           finished={finished}
           total={total}
           onRestart={restart}
