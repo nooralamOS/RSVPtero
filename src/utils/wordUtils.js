@@ -14,6 +14,25 @@ export function getDelayMultiplier(word) {
   return 1;
 }
 
+/**
+ * Wall-clock RSVP position: which word should be visible after elapsedMs from startWordIndex,
+ * and ms until the next word change. Uses the same per-word durations as playback.
+ */
+export function computePlaybackFrame(startWordIndex, elapsedMs, words, wpm) {
+  const baseMs = (60 / wpm) * 1000;
+  let remaining = Math.max(0, elapsedMs);
+  let idx = startWordIndex;
+  while (idx < words.length) {
+    const ms = baseMs * getDelayMultiplier(words[idx]);
+    if (remaining < ms) {
+      return { displayedIndex: idx, msUntilNext: ms - remaining };
+    }
+    remaining -= ms;
+    idx++;
+  }
+  return { finished: true };
+}
+
 export function getORPIndex(word) {
   const len = word.length;
   if (len <= 1) return 0;

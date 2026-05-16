@@ -2,7 +2,80 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import Controls from './Controls';
 import ThumbnailSidebar from './ThumbnailSidebar';
 import PagePreviewPopup from './PagePreviewPopup';
-import { tokenizeText, getDelayMultiplier, getORPIndex, formatTime, detectChapters } from '../utils/wordUtils';
+import { tokenizeText, getORPIndex, formatTime, detectChapters, computePlaybackFrame } from '../utils/wordUtils';
+
+const WORD_FONT_STORAGE_KEY = 'flashread-word-font';
+
+function readStoredWordFont() {
+  try {
+    const s = localStorage.getItem(WORD_FONT_STORAGE_KEY);
+    if (s === 'atkinson' || s === 'serif') return s;
+  } catch {
+    /* ignore */
+  }
+  return 'serif';
+}
+
+function ReaderTopbarActions({
+  wordFont,
+  onWordFontChange,
+  settingsOpen,
+  onSettingsOpenChange,
+  settingsWrapRef,
+  onBackClick,
+}) {
+  return (
+    <div className="reader__topbar-right">
+      <div className="reader__settings-wrap" ref={settingsWrapRef}>
+        <button
+          type="button"
+          className={`reader__settings-btn${settingsOpen ? ' reader__settings-btn--open' : ''}`}
+          aria-expanded={settingsOpen}
+          aria-haspopup="true"
+          aria-label="Settings"
+          onClick={() => onSettingsOpenChange((o) => !o)}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+        {settingsOpen && (
+          <div className="reader__settings-panel" role="region" aria-label="Reader settings">
+            <div className="reader__settings-label">Reading font</div>
+            <div className="reader__font-segment" role="group" aria-label="Reading font">
+              <button
+                type="button"
+                className={`reader__font-option${wordFont === 'serif' ? ' reader__font-option--active' : ''}`}
+                style={{ fontFamily: 'var(--font-word-serif)' }}
+                onClick={() => {
+                  onWordFontChange('serif');
+                  onSettingsOpenChange(false);
+                }}
+              >
+                Libre Baskerville
+              </button>
+              <button
+                type="button"
+                className={`reader__font-option${wordFont === 'atkinson' ? ' reader__font-option--active' : ''}`}
+                style={{ fontFamily: 'var(--font-word-atkinson)' }}
+                onClick={() => {
+                  onWordFontChange('atkinson');
+                  onSettingsOpenChange(false);
+                }}
+              >
+                Atkinson Hyperlegible
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      <button type="button" className="reader__back-btn" onClick={onBackClick}>
+        ← New file
+      </button>
+    </div>
+  );
+}
 
 function WordInner({ word, orpRef }) {
   if (!word) return null;
@@ -476,12 +549,18 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   const [previewAnchorRect, setPreviewAnchorRect] = useState(null);
   const [previewSide, setPreviewSide] = useState('right');
   const [wordRect, setWordRect] = useState(null);
+  const [wordFont, setWordFont] = useState(readStoredWordFont);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsWrapRef = useRef(null);
 
   const playingRef = useRef(false);
   const wpmRef = useRef(wpm);
   const indexRef = useRef(0);
   const timeoutRef = useRef(null);
-  const nextAtRef = useRef(null);
+  /** Wall-clock anchor: performance time when startWord was first shown */
+  const playbackT0Ref = useRef(null);
+  const playbackStartWordRef = useRef(0);
+  const prevWpmRef = useRef(wpm);
 
   const pageStarts = useMemo(() => {
     if (!pageWordCounts?.length) return [];
@@ -522,7 +601,42 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   useEffect(() => { wpmRef.current = wpm; }, [wpm]);
   useEffect(() => { indexRef.current = index; }, [index]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
+  useEffect(() => {
+    if (prevWpmRef.current !== wpm) {
+      if (playing) {
+        playbackT0Ref.current = performance.now();
+        playbackStartWordRef.current = index;
+      }
+      prevWpmRef.current = wpm;
+    }
+  }, [wpm, playing, index]);
+
   useEffect(() => { if (previewOpen) setPreviewPage(currentPage); }, [currentPage, previewOpen]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(WORD_FONT_STORAGE_KEY, wordFont);
+    } catch {
+      /* ignore */
+    }
+  }, [wordFont]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onPointerDown = (e) => {
+      const el = settingsWrapRef.current;
+      if (el && !el.contains(e.target)) setSettingsOpen(false);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') setSettingsOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [settingsOpen]);
 
   const localWordIndex = useMemo(() => {
     if (!pageStarts.length) return 0;
@@ -538,27 +652,45 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
 
   const scheduleNext = useCallback(() => {
     if (!playingRef.current) return;
-    const i = indexRef.current;
-    if (i >= words.current.length) {
+    const list = words.current;
+    const now =
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+
+    if (playbackT0Ref.current === null) {
+      playbackT0Ref.current = now;
+      playbackStartWordRef.current = indexRef.current;
+    }
+
+    const elapsed = now - playbackT0Ref.current;
+    const frame = computePlaybackFrame(playbackStartWordRef.current, elapsed, list, wpmRef.current);
+
+    if (frame.finished) {
+      playbackT0Ref.current = null;
+      const last = list.length > 0 ? list.length - 1 : 0;
+      indexRef.current = list.length;
+      setIndex(last);
       setPlaying(false);
       setFinished(true);
       return;
     }
-    const word = words.current[i];
-    const baseMs = (60 / wpmRef.current) * 1000;
-    const ms = baseMs * getDelayMultiplier(word);
 
-    setIndex(i);
-    indexRef.current = i + 1;
-
-    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
-      ? performance.now()
-      : Date.now();
-    if (nextAtRef.current === null) nextAtRef.current = now;
-    nextAtRef.current += ms;
-    const delay = Math.max(0, nextAtRef.current - now);
-    timeoutRef.current = setTimeout(scheduleNext, delay);
+    const { displayedIndex, msUntilNext } = frame;
+    setIndex(displayedIndex);
+    indexRef.current = displayedIndex + 1;
+    timeoutRef.current = setTimeout(scheduleNext, msUntilNext);
   }, []);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden || !playingRef.current) return;
+      clearTimeout(timeoutRef.current);
+      scheduleNext();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [scheduleNext]);
 
   const play = useCallback(() => {
     if (indexRef.current >= words.current.length) {
@@ -566,7 +698,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
       setIndex(0);
       setFinished(false);
     }
-    nextAtRef.current = null;
+    playbackT0Ref.current = null;
     playingRef.current = true;
     setPlaying(true);
     scheduleNext();
@@ -576,7 +708,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     playingRef.current = false;
     setPlaying(false);
     clearTimeout(timeoutRef.current);
-    nextAtRef.current = null;
+    playbackT0Ref.current = null;
   }, []);
 
   const scrubWasPlayingRef = useRef(false);
@@ -607,7 +739,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     setFinished(false);
     if (!wasPaused) {
       setTimeout(() => {
-        nextAtRef.current = null;
+        playbackT0Ref.current = null;
         playingRef.current = true;
         setPlaying(true);
         scheduleNext();
@@ -624,7 +756,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     setFinished(false);
     if (!wasPaused) {
       setTimeout(() => {
-        nextAtRef.current = null;
+        playbackT0Ref.current = null;
         playingRef.current = true;
         setPlaying(true);
         scheduleNext();
@@ -680,13 +812,20 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
 
   if (!isReady) {
     return (
-      <div className="reader">
+      <div className="reader" data-word-font={wordFont}>
         <div className="reader__main">
           <div className="reader__topbar">
             <div className="reader__topbar-left">
               <span className="reader__title">{fileName}</span>
             </div>
-            <button className="reader__back-btn" onClick={onBack}>← New file</button>
+            <ReaderTopbarActions
+              wordFont={wordFont}
+              onWordFontChange={setWordFont}
+              settingsOpen={settingsOpen}
+              onSettingsOpenChange={setSettingsOpen}
+              settingsWrapRef={settingsWrapRef}
+              onBackClick={onBack}
+            />
           </div>
           <div className="reader__stage">
             <div style={{ color: 'var(--text-muted)', fontSize: '1rem' }}>Processing…</div>
@@ -701,7 +840,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   const timeRemaining = (wordsLeft / wpm) * 60;
 
   return (
-    <div className="reader">
+    <div className="reader" data-word-font={wordFont}>
       {pdfData && sidebarOpen && (
         <ThumbnailSidebar
           pdfData={pdfData}
@@ -731,9 +870,17 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
             )}
             <span className="reader__title">{fileName}</span>
           </div>
-          <button className="reader__back-btn" onClick={() => { pause(); onBack(); }}>
-            ← New file
-          </button>
+          <ReaderTopbarActions
+            wordFont={wordFont}
+            onWordFontChange={setWordFont}
+            settingsOpen={settingsOpen}
+            onSettingsOpenChange={setSettingsOpen}
+            settingsWrapRef={settingsWrapRef}
+            onBackClick={() => {
+              pause();
+              onBack();
+            }}
+          />
         </div>
 
         <WordStage

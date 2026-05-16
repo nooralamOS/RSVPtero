@@ -113,6 +113,9 @@ export default function PagePreviewPopup({
       if (!el) return;
       if (e.target?.closest?.('.dialkit-root, .dialkit-panel')) return;
       if (e.target?.closest?.('.controls')) return;
+      // Keep the preview open while interacting with the main word display
+      // (scrubbing/dragging/pinching can start outside the popup).
+      if (e.target?.closest?.('.reader__stage, .drum-roller')) return;
       if (!el.contains(e.target)) onClose?.();
     };
     window.addEventListener('pointerdown', onPointerDown, { capture: true });
@@ -179,25 +182,64 @@ export default function PagePreviewPopup({
   };
 
   const onViewportResizeDown = (e) => {
+    // Back-compat: treat the old handle as bottom-right.
+    onViewportResizeHandleDown('se', e);
+  };
+
+  const onViewportResizeHandleDown = (handle, e) => {
     if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
 
     const startX = e.clientX;
+    const startY = e.clientY;
     const startW = viewportWidth ?? tuning?.viewportWidth ?? 332;
-    resizeRef.current = { startX, startW };
+    const startLeft = manualPos?.left ?? popupStyle.left ?? 0;
+    const startTop = manualPos?.top ?? popupStyle.top ?? 0;
+    resizeRef.current = { handle, startX, startY, startW, startLeft, startTop };
 
     const onMove = (ev) => {
       const r = resizeRef.current;
       if (!r) return;
-      const nextW = clampViewportWidth(Math.round(r.startW + (ev.clientX - r.startX)));
+
+      const dx = ev.clientX - r.startX;
+      const dy = ev.clientY - r.startY;
+      const aspect = Math.max(0.5, pageAspect || 1);
+      const dyToW = dy / aspect;
+
+      const hasN = r.handle.includes('n');
+      const hasS = r.handle.includes('s');
+      const hasW = r.handle.includes('w');
+      const hasE = r.handle.includes('e');
+
+      let deltaW = 0;
+      if (hasE) deltaW += dx;
+      if (hasW) deltaW -= dx;
+      if (hasS) deltaW += dyToW;
+      if (hasN) deltaW -= dyToW;
+
+      const nextW = clampViewportWidth(Math.round(r.startW + deltaW));
+      const appliedDeltaW = nextW - r.startW;
+
+      // Keep the "opposite" edge anchored when resizing from left/top.
+      let nextLeft = r.startLeft;
+      let nextTop = r.startTop;
+
+      if (hasW) nextLeft = r.startLeft - appliedDeltaW;
+      if (hasN) nextTop = r.startTop - appliedDeltaW * aspect;
+
       setViewportWidth(nextW);
+      if (hasW || hasN) {
+        setManualPos({ left: nextLeft, top: nextTop });
+      }
     };
+
     const onUp = () => {
       resizeRef.current = null;
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
     };
+
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   };
@@ -208,6 +250,16 @@ export default function PagePreviewPopup({
 
   return (
     <div ref={popupRef} className="page-pop" style={popupStyle}>
+      <div className="page-pop__handles" aria-hidden="true">
+        <div className="page-pop__handle page-pop__handle--n"  onPointerDown={(e) => onViewportResizeHandleDown('n', e)} />
+        <div className="page-pop__handle page-pop__handle--s"  onPointerDown={(e) => onViewportResizeHandleDown('s', e)} />
+        <div className="page-pop__handle page-pop__handle--e"  onPointerDown={(e) => onViewportResizeHandleDown('e', e)} />
+        <div className="page-pop__handle page-pop__handle--w"  onPointerDown={(e) => onViewportResizeHandleDown('w', e)} />
+        <div className="page-pop__handle page-pop__handle--ne" onPointerDown={(e) => onViewportResizeHandleDown('ne', e)} />
+        <div className="page-pop__handle page-pop__handle--nw" onPointerDown={(e) => onViewportResizeHandleDown('nw', e)} />
+        <div className="page-pop__handle page-pop__handle--se" onPointerDown={(e) => onViewportResizeHandleDown('se', e)} />
+        <div className="page-pop__handle page-pop__handle--sw" onPointerDown={(e) => onViewportResizeHandleDown('sw', e)} />
+      </div>
       <div
         className="page-pop__viewport"
         style={{ width: w }}
@@ -219,12 +271,7 @@ export default function PagePreviewPopup({
         </div>
       </div>
       <div className="page-pop__meta">Page {pageIndex + 1}</div>
-      <div
-        className="page-pop__resize"
-        role="button"
-        aria-label="Resize preview"
-        onPointerDown={onViewportResizeDown}
-      />
+      <div className="page-pop__resize" role="button" aria-label="Resize preview" onPointerDown={onViewportResizeDown} />
     </div>
   );
 }

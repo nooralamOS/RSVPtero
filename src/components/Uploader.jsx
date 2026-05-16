@@ -100,9 +100,9 @@ export default function Uploader({ onLoad }) {
           <button
             className="uploader__preloaded-btn"
             disabled={loading}
-            onClick={() => loadPreloaded({ url: `${import.meta.env.BASE_URL}books/Dune Messiah - Frank Herbert.pdf`, fileName: 'Dune Messiah - Frank Herbert.pdf' })}
+            onClick={() => loadPreloaded({ url: `${import.meta.env.BASE_URL}books/odysseyfagles.pdf`, fileName: 'odysseyfagles.pdf' })}
           >
-            Dune Messiah
+            The Odyssey
           </button>
           <button
             className="uploader__preloaded-btn"
