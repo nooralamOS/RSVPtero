@@ -24,7 +24,6 @@ export default function Controls({
 
   return (
     <div className="controls">
-      {/* Progress */}
       <div className="controls__progress-wrap">
         <span>{currentIndex.toLocaleString()}</span>
         <div className="controls__progress-track" onClick={handleBarClick}>
@@ -36,8 +35,8 @@ export default function Controls({
           </div>
           {chapters.map((ch) => (
             <div
-              key={ch.wordIndex}
-              className="controls__chapter-marker"
+              key={`${ch.kind ?? 'chapter'}-${ch.wordIndex}-${ch.label}`}
+              className={`controls__chapter-marker${ch.kind === 'section' ? ' controls__section-marker' : ''}`}
               style={{ left: `${(ch.wordIndex / totalWords) * 100}%` }}
               title={ch.label}
               onClick={(e) => { e.stopPropagation(); onSeek(ch.wordIndex); }}
@@ -47,9 +46,7 @@ export default function Controls({
         <span>{totalWords.toLocaleString()}</span>
       </div>
 
-      {/* Main row */}
       <div className="controls__main">
-        {/* Playback */}
         <div className="controls__playback">
           <button className="ctrl-btn" onClick={onRestart} title="Restart">⟳</button>
           <button className="ctrl-btn" onClick={() => onSkip(-10)} title="Back 10 words">«</button>
@@ -63,7 +60,6 @@ export default function Controls({
           <button className="ctrl-btn" onClick={() => onSkip(10)} title="Forward 10 words">»</button>
         </div>
 
-        {/* WPM slider */}
         <div className="controls__wpm">
           <span className="controls__wpm-label">WPM</span>
           <input
@@ -77,13 +73,11 @@ export default function Controls({
           <span className="controls__wpm-val">{wpm}</span>
         </div>
 
-        {/* Stats */}
         <div className="controls__stats">
           <span>⏱ {formatTime(timeRemaining)} left</span>
         </div>
       </div>
 
-      {/* Shortcuts legend */}
       <div className="controls__shortcuts">
         <div className="shortcut"><kbd>Space</kbd> Play / Pause</div>
         <div className="shortcut"><kbd>←</kbd> Back 10 words</div>
@@ -91,6 +85,12 @@ export default function Controls({
         <div className="shortcut"><kbd>↑</kbd> +50 WPM</div>
         <div className="shortcut"><kbd>↓</kbd> −50 WPM</div>
         <div className="shortcut"><kbd>R</kbd> Restart</div>
+        {chapters.length > 0 && (
+          <>
+            <div className="shortcut"><kbd>[</kbd> Previous marker</div>
+            <div className="shortcut"><kbd>]</kbd> Next marker</div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,331 @@
+/* ── Paper Dropzone Component ────────────────────────── */
+
+.paper-dropzone-wrapper {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 20px;
+  perspective: 1000px;
+}
+
+.paper-dropzone {
+  position: relative;
+  width: 80vw;
+  max-width: 850px;
+  height: 550px;
+  cursor: pointer;
+  overflow: visible;
+  transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-style: preserve-3d;
+  --curl-size-base: 100px;
+  --curl-size-hover: 120px;
+  --curl-size-drag: 120px;
+  --curl-fold: 54%;
+  --curl-radius: 2px;
+  --curl-shadow-opacity: 0.02;
+  --curl-shadow-blur: 7px;
+  --curl-shadow-scale: 0.9;
+  --curl-shadow-offset: 8px;
+  --curl-drop-opacity: 0.28;
+  --curl-drop-blur: 5px;
+  --curl-drop-offset: 0px;
+  --curl-inner-opacity: 0.08;
+  --curl-highlight-opacity: 0.1;
+  --curl-highlight-spread: 1%;
+  --curl-color-1: #e9e4dd;
+  --curl-color-2: #e7e2da;
+  --curl-color-3: #e7e2da;
+  --paper-surface-radius: 0px;
+}
+
+.paper-dropzone:hover,
+.paper-dropzone--hover-preview {
+  transform: translateY(-4px) scale(1.01);
+}
+
+.paper-dropzone--dragging {
+  transform: translateY(-8px) scale(1.02);
+}
+
+.paper-surface {
+  position: absolute;
+  inset: 0;
+  /* Warm off-white with subtle gradient for texture */
+  background: linear-gradient(135deg, #fcfcfb 0%, #f4f3ef 50%, #eceae4 100%);
+  border-radius: var(--paper-surface-radius);
+  /* The bottom right corner must be sharp so the curl looks like it's folding from it */
+  border-bottom-right-radius: 0;
+  
+  /* Layered shadows for physical depth */
+  box-shadow:
+    0 30px 60px rgba(0, 0, 0, 0.15),
+    0 12px 24px rgba(0, 0, 0, 0.1),
+    0 4px 8px rgba(0, 0, 0, 0.05),
+    inset 0 1px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.03);
+    
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 0.4s ease, filter 0.4s ease;
+}
+
+.paper-dropzone:hover .paper-surface {
+  box-shadow:
+    0 40px 80px rgba(0, 0, 0, 0.18),
+    0 16px 32px rgba(0, 0, 0, 0.12),
+    0 6px 12px rgba(0, 0, 0, 0.06),
+    inset 0 1px 2px rgba(255, 255, 255, 0.9),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.03);
+}
+
+.paper-dropzone--dragging .paper-surface {
+  filter: brightness(1.05);
+  box-shadow:
+    0 50px 100px rgba(0, 0, 0, 0.2),
+    0 20px 40px rgba(0, 0, 0, 0.15),
+    0 8px 16px rgba(0, 0, 0, 0.08),
+    inset 0 1px 2px rgba(255, 255, 255, 0.9),
+    inset 0 0 40px rgba(255, 255, 255, 0.5);
+}
+
+/* ── Content ────────────────────────────────────────── */
+
+.paper-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  color: #2a2d38;
+  z-index: 10;
+  padding: 40px;
+}
+
+.paper-title {
+  font-family: var(--font-word-serif);
+  font-size: 2.4rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  margin: 0;
+  color: #1a1c23;
+}
+
+.paper-subtitle {
+  font-size: 1.1rem;
+  color: #6a6e80;
+  font-weight: 400;
+  margin-bottom: 16px;
+}
+
+.paper-btn {
+  padding: 14px 32px;
+  background: #2a2d38;
+  color: #ffffff;
+  border: none;
+  border-radius: 12px;
+  font-size: 1.05rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.paper-btn:hover {
+  background: #1a1c23;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+
+.paper-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* ── Dark mode overrides ─────────────────────────── */
+[data-theme="dark"] .paper-surface {
+  background: linear-gradient(135deg, #3c3c3d 0%, #353536 50%, #2e2e2f 100%);
+  box-shadow:
+    0 30px 60px rgba(0, 0, 0, 0.45),
+    0 12px 24px rgba(0, 0, 0, 0.3),
+    0 4px 8px rgba(0, 0, 0, 0.2),
+    inset 0 1px 2px rgba(255, 255, 255, 0.06),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .paper-dropzone:hover .paper-surface {
+  box-shadow:
+    0 40px 80px rgba(0, 0, 0, 0.5),
+    0 16px 32px rgba(0, 0, 0, 0.35),
+    0 6px 12px rgba(0, 0, 0, 0.25),
+    inset 0 1px 2px rgba(255, 255, 255, 0.06),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.15);
+}
+
+[data-theme="dark"] .paper-dropzone {
+  --curl-color-1: #252526;
+  --curl-color-2: #1e1e1f;
+  --curl-color-3: #181819;
+}
+
+[data-theme="dark"] .paper-content {
+  color: #D1D1CF;
+}
+
+[data-theme="dark"] .paper-title {
+  color: #D1D1CF;
+}
+
+[data-theme="dark"] .paper-subtitle {
+  color: #8E8E8C;
+}
+
+[data-theme="dark"] .paper-btn {
+  background: #D1D1CF;
+  color: #2B2B2C;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="dark"] .paper-btn:hover {
+  background: #BFBFBD;
+}
+
+/* ── Page Curl Magic ────────────────────────────────── */
+
+/* Container for the curl elements at the bottom right */
+.paper-curl-container {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: var(--curl-size-base);
+  height: var(--curl-size-base);
+  pointer-events: none; /* Let clicks pass through to the dropzone */
+  z-index: 20;
+  transition: width 0.4s ease, height 0.4s ease;
+}
+
+.paper-dropzone:hover .paper-curl-container,
+.paper-dropzone--hover-preview .paper-curl-container {
+  width: var(--curl-size-hover);
+  height: var(--curl-size-hover);
+}
+
+.paper-dropzone--dragging .paper-curl-container {
+  width: var(--curl-size-drag);
+  height: var(--curl-size-drag);
+}
+
+/* The cast shadow underneath the fold */
+.paper-curl-shadow {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    135deg,
+    transparent var(--curl-fold),
+    rgba(0, 0, 0, var(--curl-shadow-opacity)) var(--curl-fold)
+  );
+  filter: blur(var(--curl-shadow-blur));
+  transform-origin: bottom right;
+  transform: scale(var(--curl-shadow-scale))
+    translate(calc(var(--curl-shadow-offset) * -1), calc(var(--curl-shadow-offset) * -1));
+  transition: transform 0.4s ease, filter 0.4s ease;
+}
+
+.paper-dropzone:hover .paper-curl-shadow,
+.paper-dropzone--hover-preview .paper-curl-shadow {
+  transform: scale(calc(var(--curl-shadow-scale) + 0.05))
+    translate(calc(var(--curl-shadow-offset) * -1.5), calc(var(--curl-shadow-offset) * -1.5));
+  filter: blur(calc(var(--curl-shadow-blur) + 2px));
+}
+
+.paper-dropzone--dragging .paper-curl-shadow {
+  transform: scale(calc(var(--curl-shadow-scale) + 0.1))
+    translate(calc(var(--curl-shadow-offset) * -2), calc(var(--curl-shadow-offset) * -2));
+  filter: blur(calc(var(--curl-shadow-blur) + 4px));
+}
+
+/* The actual folded paper surface */
+.paper-curl {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    135deg,
+    transparent var(--curl-fold),
+    var(--curl-color-1) var(--curl-fold),
+    var(--curl-color-2) 80%,
+    var(--curl-color-3) 100%
+  );
+  box-shadow: inset -2px -2px 10px rgba(0, 0, 0, var(--curl-inner-opacity));
+  border-top-left-radius: var(--curl-radius);
+  filter: drop-shadow(
+    calc(var(--curl-drop-offset) * -1)
+    calc(var(--curl-drop-offset) * -1)
+    var(--curl-drop-blur)
+    rgba(0, 0, 0, var(--curl-drop-opacity))
+  );
+  transform-origin: bottom right;
+  transition: filter 0.4s ease;
+}
+
+.paper-dropzone:hover .paper-curl,
+.paper-dropzone--hover-preview .paper-curl {
+  filter: drop-shadow(
+    calc(var(--curl-drop-offset) * -1.5)
+    calc(var(--curl-drop-offset) * -1.5)
+    calc(var(--curl-drop-blur) + 4px)
+    rgba(0, 0, 0, calc(var(--curl-drop-opacity) + 0.02))
+  );
+}
+
+.paper-dropzone--dragging .paper-curl {
+  filter: drop-shadow(
+    calc(var(--curl-drop-offset) * -2)
+    calc(var(--curl-drop-offset) * -2)
+    calc(var(--curl-drop-blur) + 8px)
+    rgba(0, 0, 0, calc(var(--curl-drop-opacity) + 0.05))
+  );
+}
+
+/* The highlight edge along the fold */
+.paper-curl-highlight {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    transparent calc(var(--curl-fold) - var(--curl-highlight-spread)),
+    rgba(255, 255, 255, var(--curl-highlight-opacity)) var(--curl-fold),
+    transparent calc(var(--curl-fold) + var(--curl-highlight-spread))
+  );
+  border-top-left-radius: var(--curl-radius);
+}
+
+/* Cut out the bottom right corner of the main paper surface to reveal the background behind the fold */
+.paper-surface::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: var(--curl-size-base);
+  height: var(--curl-size-base);
+  background: linear-gradient(135deg, transparent var(--curl-fold), var(--bg) var(--curl-fold));
+  transition: width 0.4s ease, height 0.4s ease;
+  pointer-events: none;
+}
+
+.paper-dropzone:hover .paper-surface::after,
+.paper-dropzone--hover-preview .paper-surface::after {
+  width: var(--curl-size-hover);
+  height: var(--curl-size-hover);
+}
+
+.paper-dropzone--dragging .paper-surface::after {
+  width: var(--curl-size-drag);
+  height: var(--curl-size-drag);
+}

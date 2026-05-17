@@ -3,8 +3,9 @@ import Controls from './Controls';
 import ThumbnailSidebar from './ThumbnailSidebar';
 import PagePreviewPopup from './PagePreviewPopup';
 import { tokenizeText, getORPIndex, formatTime, detectChapters, computePlaybackFrame } from '../utils/wordUtils';
+import { mergeMarkers, seekMarker } from '../utils/chapterUtils';
 
-const WORD_FONT_STORAGE_KEY = 'flashread-word-font';
+const WORD_FONT_STORAGE_KEY = 'ziptero-word-font';
 
 function readStoredWordFont() {
   try {
@@ -16,6 +17,30 @@ function readStoredWordFont() {
   return 'serif';
 }
 
+function SunIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="5"/>
+      <line x1="12" y1="1" x2="12" y2="3"/>
+      <line x1="12" y1="21" x2="12" y2="23"/>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+      <line x1="1" y1="12" x2="3" y2="12"/>
+      <line x1="21" y1="12" x2="23" y2="12"/>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+    </svg>
+  );
+}
+
 function ReaderTopbarActions({
   wordFont,
   onWordFontChange,
@@ -23,6 +48,8 @@ function ReaderTopbarActions({
   onSettingsOpenChange,
   settingsWrapRef,
   onBackClick,
+  theme,
+  onToggleTheme,
 }) {
   return (
     <div className="reader__topbar-right">
@@ -70,6 +97,17 @@ function ReaderTopbarActions({
           </div>
         )}
       </div>
+      {onToggleTheme && (
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={onToggleTheme}
+          aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+        </button>
+      )}
       <button type="button" className="reader__back-btn" onClick={onBackClick}>
         ← New file
       </button>
@@ -534,10 +572,11 @@ function WordStage({ words, index, wpm, playing, onSeek, onScrubStart, onScrubEn
   );
 }
 
-export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCounts, pageWordBoxes }) {
+export default function Reader({ rawText, fileName, onBack, pdfData, pageTexts, pageWordCounts, pageWordBoxes, documentChapters, theme, onToggleTheme }) {
   const words = useRef([]);
   const [isReady, setIsReady] = useState(false);
   const [chapters, setChapters] = useState([]);
+  const chaptersRef = useRef([]);
 
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -562,6 +601,8 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
   const playbackT0Ref = useRef(null);
   const playbackStartWordRef = useRef(0);
   const prevWpmRef = useRef(wpm);
+
+  const hasPagePreview = Boolean(pdfData || pageTexts?.length);
 
   const pageStarts = useMemo(() => {
     if (!pageWordCounts?.length) return [];
@@ -588,16 +629,23 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     const id = setTimeout(() => {
       if (cancelled) return;
       const w = tokenizeText(rawText);
-      const ch = detectChapters(w);
+      const detected = detectChapters(w).map((c) => ({ ...c, kind: 'chapter' }));
+      const structural = (documentChapters ?? []).map((c) => ({
+        wordIndex: c.wordIndex,
+        label: c.label,
+        kind: c.kind || 'section',
+      }));
       words.current = w;
-      setChapters(ch);
+      setChapters(mergeMarkers([...structural, ...detected]));
       setIsReady(true);
     }, 0);
     return () => {
       cancelled = true;
       clearTimeout(id);
     };
-  }, [rawText]);
+  }, [rawText, documentChapters]);
+
+  useEffect(() => { chaptersRef.current = chapters; }, [chapters]);
 
   useEffect(() => { wpmRef.current = wpm; }, [wpm]);
   useEffect(() => { indexRef.current = index; }, [index]);
@@ -801,6 +849,18 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
         case 'R':
           restart();
           break;
+        case '[': {
+          e.preventDefault();
+          const target = seekMarker(chaptersRef.current, indexRef.current, -1);
+          if (target !== null) seek(target);
+          break;
+        }
+        case ']': {
+          e.preventDefault();
+          const target = seekMarker(chaptersRef.current, indexRef.current, 1);
+          if (target !== null) seek(target);
+          break;
+        }
         case 'Escape':
           if (isFullscreen) {
             e.preventDefault();
@@ -813,7 +873,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [play, pause, skip, restart, isFullscreen]);
+  }, [play, pause, skip, restart, seek, isFullscreen]);
 
   useEffect(() => () => clearTimeout(timeoutRef.current), []);
 
@@ -842,6 +902,8 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
               onSettingsOpenChange={setSettingsOpen}
               settingsWrapRef={settingsWrapRef}
               onBackClick={onBack}
+              theme={theme}
+              onToggleTheme={onToggleTheme}
             />
           </div>
           <div className="reader__stage">
@@ -858,10 +920,10 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
 
   return (
     <div className={`reader${isFullscreen ? ' reader--fullscreen' : ''}`} data-word-font={wordFont}>
-      {pdfData && sidebarOpen && !isFullscreen && (
+      {hasPagePreview && sidebarOpen && !isFullscreen && (
         <ThumbnailSidebar
           pdfData={pdfData}
-          pageWordCounts={pageWordCounts}
+          pageTexts={pageTexts}
           pageStarts={pageStarts}
           currentPage={currentPage}
           onSeek={seek}
@@ -872,7 +934,7 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
         {!isFullscreen && (
         <div className="reader__topbar">
           <div className="reader__topbar-left">
-            {pdfData && (
+            {hasPagePreview && (
               <button
                 className={`reader__sidebar-btn${sidebarOpen ? ' reader__sidebar-btn--active' : ''}`}
                 onClick={() => setSidebarOpen((o) => !o)}
@@ -898,6 +960,8 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
               pause();
               onBack();
             }}
+            theme={theme}
+            onToggleTheme={onToggleTheme}
           />
         </div>
         )}
@@ -922,10 +986,11 @@ export default function Reader({ rawText, fileName, onBack, pdfData, pageWordCou
           }}
         />
 
-        {pdfData && (
+        {hasPagePreview && (
           <PagePreviewPopup
             open={previewOpen}
             pdfData={pdfData}
+            pageTexts={pageTexts}
             pageIndex={previewPage}
             anchorRect={previewAnchorRect}
             side={previewSide}

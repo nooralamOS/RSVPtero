@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import { markersFromPageStarts, pageStartsFromCounts } from './chapterUtils';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -95,10 +96,12 @@ export async function extractPDFData(file) {
     } : null);
   }
 
+  const pageStarts = pageStartsFromCounts(pageWordCounts);
   return {
     text: pageTexts.join(' '),
     pageWordCounts,
     pageWordBoxes,
+    documentChapters: markersFromPageStarts(pageStarts, null, 'Page'),
     pdfData: arrayBuffer,  // original ArrayBuffer, never transferred
   };
 }

@@ -1,26 +1,33 @@
-import { useRef, useState, useCallback } from 'react';
-import { extractPDFData } from '../utils/pdfParser';
+import { useState, useCallback } from 'react';
+import { parseDocument, detectDocumentType, formatLabel } from '../utils/documentParser';
 import { SAMPLE_TEXT } from '../utils/wordUtils';
+import PaperDropzone from './PaperDropzone';
+import '../styles/paper-dropzone.css';
 
 export default function Uploader({ onLoad }) {
-  const [dragging, setDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const inputRef = useRef(null);
 
   const processFile = useCallback(async (file) => {
-    if (!file || file.type !== 'application/pdf') {
-      setError('Please upload a valid PDF file.');
+    const type = detectDocumentType(file);
+    if (!file || !type) {
+      setError('Please upload a PDF, EPUB, TXT, Markdown, or HTML file.');
       return;
     }
     setError('');
     setLoading(true);
     try {
-      const { text, pageWordCounts, pageWordBoxes, pdfData } = await extractPDFData(file);
-      onLoad({ text, name: file.name, pageWordCounts, pageWordBoxes, pdfData });
+      const { text, pageWordCounts, pageWordBoxes, pdfData, pageTexts, documentChapters } = await parseDocument(file);
+      onLoad({ text, name: file.name, pageWordCounts, pageWordBoxes, pdfData, pageTexts, documentChapters });
     } catch (e) {
       console.error(e);
-      setError('Failed to parse PDF. Try another file.');
+      if (e?.message === 'unsupported') {
+        setError('Please upload a PDF, EPUB, TXT, Markdown, or HTML file.');
+      } else if (e?.message === 'empty') {
+        setError('That file appears to be empty.');
+      } else {
+        setError(`Failed to parse ${formatLabel(type)}. Try another file.`);
+      }
     } finally {
       setLoading(false);
     }
@@ -37,55 +44,17 @@ export default function Uploader({ onLoad }) {
       await processFile(file);
     } catch (e) {
       console.error(e);
-      setError('Failed to load the preloaded PDF. Make sure the file exists in /books.');
+      setError('Failed to load the preloaded book. Make sure the file exists in /books.');
     } finally {
       setLoading(false);
     }
   }, [processFile]);
 
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    setDragging(false);
-    const file = e.dataTransfer.files[0];
-    processFile(file);
-  }, [processFile]);
-
-  const handleDragOver = (e) => { e.preventDefault(); setDragging(true); };
-  const handleDragLeave = () => setDragging(false);
-
-  const handleFileChange = (e) => {
-    processFile(e.target.files[0]);
-    e.target.value = '';
-  };
-
   return (
     <div className="uploader">
-      <div className="uploader__logo">Flash<span>Read</span></div>
+      <div className="uploader__logo">Zip<span>tero</span></div>
 
-      <div
-        className={`uploader__dropzone${dragging ? ' uploader__dropzone--active' : ''}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onClick={() => inputRef.current?.click()}
-      >
-        <div className="uploader__icon">📄</div>
-        <div className="uploader__title">Drop a PDF here</div>
-        <div className="uploader__subtitle">or click to browse your files</div>
-        <button
-          className="uploader__btn"
-          onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
-        >
-          Choose PDF
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/pdf"
-          style={{ display: 'none' }}
-          onChange={handleFileChange}
-        />
-      </div>
+      <PaperDropzone onFileSelect={processFile} />
 
       <div className="uploader__preloaded">
         <div className="uploader__preloaded-label">Preloaded books</div>
@@ -114,7 +83,7 @@ export default function Uploader({ onLoad }) {
         </div>
       </div>
 
-      {loading && <p className="uploader__loading">Parsing PDF…</p>}
+      {loading && <p className="uploader__loading">Parsing document…</p>}
       {error && <p className="uploader__error">{error}</p>}
 
       <button

@@ -1,24 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { pdfjsLib, pdfDocumentBaseOptions } from '../utils/pdfParser';
-
-async function renderPage(pdf, pageNum, canvas, targetWidthPx) {
-  const page = await pdf.getPage(pageNum);
-  const nativeVp = page.getViewport({ scale: 1 });
-  const scale = targetWidthPx / nativeVp.width;
-  const viewport = page.getViewport({ scale });
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-  return { viewport, nativeVp };
-}
+import { renderPdfPage, renderTextPage, PREVIEW_REF_WIDTH } from '../utils/previewRenderer';
 
 export default function PagePreviewPopup({
   open,
   pdfData,
+  pageTexts,
   pageIndex,
   anchorRect,
   side = 'right',
-  highlightRect, // {x,y,w,h} in viewport(scale=1) coords
+  highlightRect,
   highlightPageIndex,
   tuning,
   onClose,
@@ -31,22 +22,22 @@ export default function PagePreviewPopup({
   const dragRef = useRef(null);
   const resizeRef = useRef(null);
 
-  const [manualPos, setManualPos] = useState(null); // {left, top}
+  const [manualPos, setManualPos] = useState(null);
   const [viewportWidth, setViewportWidth] = useState(null);
+
+  const isPdf = Boolean(pdfData);
+  const pageLabel = isPdf ? 'Page' : 'Section';
 
   useEffect(() => {
     if (!open) {
-      // Clear stale pdf so the next open always waits for a fresh load.
       setPdf(null);
       return;
     }
-    setViewportWidth(tuning?.viewportWidth ?? 332);
+    setViewportWidth(tuning?.viewportWidth ?? PREVIEW_REF_WIDTH);
     setManualPos(null);
   }, [open, tuning?.viewportWidth]);
 
   const minViewportWidth = tuning?.viewportWidth?.[1] ?? 220;
-  // Clamp max by screen height so the popup never grows taller than the viewport.
-  // 90px accounts for popup padding (28px), meta row (~30px), and screen margins (~32px).
   const maxViewportWidth = Math.min(
     tuning?.viewportWidth?.[2] ?? 700,
     Math.floor((window.innerHeight - 90) / Math.max(pageAspect, 0.5)),
@@ -58,7 +49,7 @@ export default function PagePreviewPopup({
     if (!anchorRect) return { opacity: 0, pointerEvents: 'none' };
     const padding = 14;
     const gutter = 290;
-    const canvasW = viewportWidth ?? tuning?.viewportWidth ?? 332;
+    const canvasW = viewportWidth ?? tuning?.viewportWidth ?? PREVIEW_REF_WIDTH;
     const width = Math.max(240, canvasW + padding * 2);
     const canvasH = canvasW * pageAspect;
     const metaAndGap = 30;
@@ -113,8 +104,6 @@ export default function PagePreviewPopup({
       if (!el) return;
       if (e.target?.closest?.('.dialkit-root, .dialkit-panel')) return;
       if (e.target?.closest?.('.controls')) return;
-      // Keep the preview open while interacting with the main word display
-      // (scrubbing/dragging/pinching can start outside the popup).
       if (e.target?.closest?.('.reader__stage, .drum-roller')) return;
       if (!el.contains(e.target)) onClose?.();
     };
@@ -132,20 +121,34 @@ export default function PagePreviewPopup({
   }, [open, onClose]);
 
   useEffect(() => {
-    if (!open || !pdf || !canvasRef.current) return;
+    if (!open || !canvasRef.current) return;
     let cancelled = false;
-    const targetWidth = viewportWidth ?? tuning?.viewportWidth ?? 332;
-    renderPage(pdf, pageIndex + 1, canvasRef.current, targetWidth)
-      .then(({ viewport, nativeVp }) => {
-        if (cancelled) return;
-        setViewportScale(viewport.scale);
-        if (nativeVp?.width && nativeVp?.height) {
-          setPageAspect(nativeVp.height / nativeVp.width);
+    const targetWidth = viewportWidth ?? tuning?.viewportWidth ?? PREVIEW_REF_WIDTH;
+
+    const render = async () => {
+      try {
+        if (pdf) {
+          const { aspect, viewport } = await renderPdfPage(pdf, pageIndex + 1, canvasRef.current, targetWidth);
+          if (cancelled) return;
+          setViewportScale(viewport.scale);
+          setPageAspect(aspect);
+          return;
         }
-      })
-      .catch((err) => console.error('PagePreviewPopup: render failed', err));
+
+        const text = pageTexts?.[pageIndex];
+        if (!text) return;
+        const { aspect } = renderTextPage(text, canvasRef.current, targetWidth);
+        if (cancelled) return;
+        setViewportScale(targetWidth / PREVIEW_REF_WIDTH);
+        setPageAspect(aspect);
+      } catch (err) {
+        console.error('PagePreviewPopup: render failed', err);
+      }
+    };
+
+    render();
     return () => { cancelled = true; };
-  }, [open, pdf, pageIndex, viewportWidth, tuning?.viewportWidth]);
+  }, [open, pdf, pageTexts, pageIndex, viewportWidth, tuning?.viewportWidth]);
 
   const shouldHighlight = open && highlightRect && highlightPageIndex === pageIndex && viewportScale > 0;
   const hl = shouldHighlight ? {
@@ -182,7 +185,6 @@ export default function PagePreviewPopup({
   };
 
   const onViewportResizeDown = (e) => {
-    // Back-compat: treat the old handle as bottom-right.
     onViewportResizeHandleDown('se', e);
   };
 
@@ -193,7 +195,7 @@ export default function PagePreviewPopup({
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const startW = viewportWidth ?? tuning?.viewportWidth ?? 332;
+    const startW = viewportWidth ?? tuning?.viewportWidth ?? PREVIEW_REF_WIDTH;
     const startLeft = manualPos?.left ?? popupStyle.left ?? 0;
     const startTop = manualPos?.top ?? popupStyle.top ?? 0;
     resizeRef.current = { handle, startX, startY, startW, startLeft, startTop };
@@ -221,7 +223,6 @@ export default function PagePreviewPopup({
       const nextW = clampViewportWidth(Math.round(r.startW + deltaW));
       const appliedDeltaW = nextW - r.startW;
 
-      // Keep the "opposite" edge anchored when resizing from left/top.
       let nextLeft = r.startLeft;
       let nextTop = r.startTop;
 
@@ -246,7 +247,7 @@ export default function PagePreviewPopup({
 
   if (!open) return null;
 
-  const w = clampViewportWidth(viewportWidth ?? tuning?.viewportWidth ?? 332);
+  const w = clampViewportWidth(viewportWidth ?? tuning?.viewportWidth ?? PREVIEW_REF_WIDTH);
 
   return (
     <div ref={popupRef} className="page-pop" style={popupStyle}>
@@ -270,9 +271,8 @@ export default function PagePreviewPopup({
           {hl && <div className="page-pop__highlight" style={hl} />}
         </div>
       </div>
-      <div className="page-pop__meta">Page {pageIndex + 1}</div>
+      <div className="page-pop__meta">{pageLabel} {pageIndex + 1}</div>
       <div className="page-pop__resize" role="button" aria-label="Resize preview" onPointerDown={onViewportResizeDown} />
     </div>
   );
 }
-

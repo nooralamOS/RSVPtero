@@ -1,28 +1,41 @@
 import { useEffect, useLayoutEffect, useRef, useState, memo } from 'react';
 import { pdfjsLib, pdfDocumentBaseOptions } from '../utils/pdfParser';
+import { renderPdfPage, renderTextPage } from '../utils/previewRenderer';
 
-async function renderPageToCanvas(pdf, pageNum, canvas) {
+const THUMB_WIDTH = 148;
+
+async function renderThumbnail(pdf, pageTexts, pageNum, canvas) {
   if (!canvas) return;
-  const page = await pdf.getPage(pageNum);
-  const rotation = page.rotate || 0;
-  const nativeVp = page.getViewport({ scale: 1, rotation });
-  const scale = 148 / nativeVp.width;
-  const viewport = page.getViewport({ scale, rotation });
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  if (pdf) {
+    await renderPdfPage(pdf, pageNum, canvas, THUMB_WIDTH);
+    return;
+  }
+  const text = pageTexts?.[pageNum - 1];
+  if (text) renderTextPage(text, canvas, THUMB_WIDTH);
 }
 
-// memo() prevents re-renders on every word — this only re-renders when currentPage changes
-// (roughly once per page, not once per word).
-export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageStarts, currentPage, onSeek, onPreview }) {
+export default memo(function ThumbnailSidebar({
+  pdfData,
+  pageTexts,
+  pageStarts,
+  currentPage,
+  onSeek,
+  onPreview,
+}) {
   const [numPages, setNumPages] = useState(0);
   const pdfRef = useRef(null);
   const listRef = useRef(null);
   const renderedRef = useRef(new Set());
 
+  const isPdf = Boolean(pdfData);
+  const pageCount = isPdf ? numPages : (pageTexts?.length ?? 0);
+
   useEffect(() => {
-    if (!pdfData) return;
+    if (!pdfData) {
+      pdfRef.current = null;
+      setNumPages(pageTexts?.length ?? 0);
+      return;
+    }
     let cancelled = false;
     pdfjsLib.getDocument({
       data: new Uint8Array(pdfData.slice(0)),
@@ -35,11 +48,11 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
       })
       .catch((err) => console.error('ThumbnailSidebar: failed to load PDF', err));
     return () => { cancelled = true; };
-  }, [pdfData]);
+  }, [pdfData, pageTexts?.length]);
 
-  // Lazy-render canvases only as pages scroll into view — no per-element ref callbacks.
   useEffect(() => {
-    if (!pdfRef.current || numPages === 0 || !listRef.current) return;
+    const total = isPdf ? numPages : (pageTexts?.length ?? 0);
+    if (total === 0 || !listRef.current) return;
 
     const observer = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -48,7 +61,7 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
         if (renderedRef.current.has(pageNum)) continue;
         renderedRef.current.add(pageNum);
         const canvas = entry.target.querySelector('canvas');
-        renderPageToCanvas(pdfRef.current, pageNum, canvas);
+        renderThumbnail(pdfRef.current, pageTexts, pageNum, canvas);
       }
     }, { rootMargin: '200px' });
 
@@ -57,23 +70,24 @@ export default memo(function ThumbnailSidebar({ pdfData, pageWordCounts, pageSta
     }
 
     return () => observer.disconnect();
-  }, [numPages]);
+  }, [numPages, pageTexts, isPdf]);
 
-  // Scroll active page into view when currentPage changes, and again once thumbnails exist
-  // (sidebar unmounts when closed; on open numPages is 0 until PDF loads, so a currentPage-only effect would miss).
   useLayoutEffect(() => {
-    if (numPages === 0 || !listRef.current) return;
+    const total = isPdf ? numPages : (pageTexts?.length ?? 0);
+    if (total === 0 || !listRef.current) return;
     listRef.current
       .querySelector(`[data-page="${currentPage + 1}"]`)
       ?.scrollIntoView({ block: 'end', behavior: 'auto' });
-  }, [currentPage, numPages]);
+  }, [currentPage, numPages, pageTexts?.length, isPdf]);
+
+  const total = pageCount;
 
   return (
     <div className="thumb-sidebar">
-      <div className="thumb-sidebar__header">Pages</div>
+      <div className="thumb-sidebar__header">{isPdf ? 'Pages' : 'Sections'}</div>
       <div className="thumb-sidebar__list" ref={listRef}>
-        {numPages === 0 && <div className="thumb-sidebar__loading">Loading…</div>}
-        {Array.from({ length: numPages }, (_, i) => (
+        {total === 0 && <div className="thumb-sidebar__loading">Loading…</div>}
+        {Array.from({ length: total }, (_, i) => (
           <div
             key={i}
             data-page={i + 1}
