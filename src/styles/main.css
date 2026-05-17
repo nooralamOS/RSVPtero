@@ -235,6 +235,11 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+}
+
+.reader--fullscreen .reader__stage {
+  padding: 48px 32px;
 }
 
 /* ── Top bar ─────────────────────────────────────── */
@@ -318,6 +323,47 @@ html, body, #root {
 }
 
 .reader__back-btn:active { transform: scale(0.97); }
+
+.reader__fullscreen-btn {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 30;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface2);
+  border: 1.5px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 9px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .reader__fullscreen-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+}
+
+.reader__fullscreen-btn:active { transform: scale(0.97); }
+
+.reader__fullscreen-btn--active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+}
+
+.reader--fullscreen .reader__fullscreen-btn {
+  bottom: 24px;
+  right: 24px;
+}
 
 .reader__topbar-right {
   display: flex;
