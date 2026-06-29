@@ -139,7 +139,7 @@ function WordInner({ word, orpRef }) {
 // - translateY = SLOT_GAP * p,  scale/opacity interpolated from |p|
 function WordStage({ words, index, wpm, playing, onSeek, onScrubStart, onScrubEnd, finished, total, onRestart, onWordRect, onWordDoubleClick }) {
   const FULL_DRAG_PX = 70;   // pixels of drag = one word of travel
-  const SLOT_GAP     = 82;   // px between slot centres at rest
+  const SLOT_GAP     = 118;  // px between slot centres at rest
   const animDuration = wpm >= 300 ? 180 : wpm >= 200 ? 220 : 260;
   const LONG_PRESS_MS = 220;
   const DRAG_ARM_PX = 6;     // start drag after small movement (mouse/pen/touch)
@@ -444,8 +444,11 @@ function WordStage({ words, index, wpm, playing, onSeek, onScrubStart, onScrubEn
     const p    = k - frac;
     const absP = Math.abs(p);
     const translateY = SLOT_GAP * p;
-    const scale   = absP <= 1 ? 1 - 0.45 * absP : Math.max(0.05, 0.55 - 0.375 * (absP - 1));
-    const opacity = absP <= 1 ? Math.max(0, 1 - 0.72 * absP) : Math.max(0, 0.28 * (2 - absP));
+    const scale   = absP <= 1 ? 1 - 0.58 * absP : Math.max(0.05, 0.42 - 0.3 * (absP - 1));
+    let   opacity = absP <= 1 ? Math.max(0, 1 - 0.80 * absP) : Math.max(0, 0.08 * (2 - absP));
+    // Upper (previous) and lower (next) words each get their own fade; smooth through centre.
+    if (p < 0) opacity *= Math.max(0.1, 1 - 0.5 * Math.min(absP, 1)); // upper
+    if (p > 0) opacity *= Math.max(0.9, 1 - 0.3 * Math.min(absP, 1)); // lower
     return { transform: `translateY(${translateY}px) scale(${scale})`, opacity };
   }
 
@@ -456,8 +459,6 @@ function WordStage({ words, index, wpm, playing, onSeek, onScrubStart, onScrubEn
       ref={stageRef}
       className={`reader__stage${!playing && !finished ? ' reader__stage--paused' : ''}`}
     >
-      <div className="reader__guideline reader__guideline--top" />
-      <div className="reader__guideline reader__guideline--bottom" />
       {finished ? (
         <div className="reader__finished">
           <h2>Done!</h2>

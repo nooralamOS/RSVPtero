@@ -584,24 +584,6 @@ html, body, #root {
   color: var(--text);
 }
 
-.reader__guideline {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 1px;
-  background: var(--border);
-  height: 28px;
-  pointer-events: none;
-}
-
-.reader__guideline--top {
-  bottom: calc(50% + 8px);
-}
-
-.reader__guideline--bottom {
-  top: calc(50% + 8px);
-}
-
 /* finished state */
 .reader__finished {
   display: flex;
